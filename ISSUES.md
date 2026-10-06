@@ -101,20 +101,13 @@ Credit: This work builds upon the pioneering research and userspace driver found
 
 ---
 
-## 5. Official "No Signal" Splash Screen (RESOLVED)
+## 5. Signal Loss and Preview Freeze (RESOLVED)
 
-### Symptoms Previously Observed
-- When no HDMI cable was connected or signal was lost, the window froze on the last frame or displayed a black window.
+### Symptoms
+- When HDMI input was disconnected or signal was lost, the preview window froze on the last received frame.
 
-### Reverse Engineering and Resolution
-- Extracted official 640x480 splash bitmaps directly from the vendor driver installer:
-  - `aver_custom_no_signal.bmp`
-  - `aver_custom_out_of_range.bmp`
-  - `aver_custom_hdcp_protection.bmp`
-  - `aver_custom_content_protection.bmp`
-- Bundled into `assets/` directory.
-- `SdlVideoOutput` centers the official 640x480 splash image with control instructions whenever no signal is detected for > 500 ms.
-- If assets are not found, falls back seamlessly to a procedural status card.
+### Resolution
+- Added a 500 ms signal loss watchdog in `SdlVideoOutput` that clears stale frame data and displays a clean standby screen on a black canvas.
 
 ---
 
@@ -127,12 +120,6 @@ Credit: This work builds upon the pioneering research and userspace driver found
 - The userspace bootstrap sequence for the ADV7604 HDMI receiver does not initiate downstream HDCP authentication or repeater negotiation over USB EP 0x01.
 - The ADV7604 hardware digitizes the incoming HDMI stream and sends raw frames to the FX3 bulk endpoint.
 - This behavior is intended and verified functional.
-
-
-
-
-
-
 
 ---
 

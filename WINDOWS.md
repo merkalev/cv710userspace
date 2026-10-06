@@ -91,9 +91,5 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . --parallel
 ```
 
-
-
-
-
 ## Other info
 The icon for the app was made using the [Android asset studio](https://romannurik.github.io/AndroidAssetStudio/icons-launcher.html).

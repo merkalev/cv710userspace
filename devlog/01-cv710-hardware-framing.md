@@ -1,7 +1,7 @@
 # Devlog 01: Reverse Engineering the AVerMedia ExtremeCap U3 (CV710)
 
-## Credits and Acknowledgments
-MASSIVE CREDIT to ChrisAJS (https://github.com/ChrisAJS/lgx2userspace). ChrisAJS did the pioneering work of reverse engineering the USB bulk stream architecture, command bootstrapping, and userspace capture design for AVerMedia devices. This project builds directly upon that foundation to bring rock-solid, production-grade Linux support exclusively to the AVerMedia ExtremeCap U3 (CV710 / C877).
+## Credits
+Based on the foundational userspace capture driver by ChrisAJS (https://github.com/ChrisAJS/lgx2userspace). This devlog documents protocol analysis and stability improvements for the AVerMedia ExtremeCap U3 (CV710).
 
 ---
 
@@ -130,13 +130,12 @@ Analyzing raw USB bus traffic recorded from live CV710 hardware (`host_u3cold.pc
   - Implemented high-performance software fixed-point Rec.709 conversion that converts YUY2 macropixels directly into 32-bit RGBA and uploads to `SDL_PIXELFORMAT_RGBA32`.
   - This eliminates SDL3 YUY2 shader bugs completely, providing 100% aligned lines out of the box.
 
-### Issue 3: "Splash Screen Background and Text Bloat"
+### Issue 3: Standby Screen and Background Cleanup
 - **Cause**:
-  - The preview window previously cleared to dark slate blue and rendered multiple lines of debug text beneath the splash image.
+  - The preview window previously cleared to dark slate blue and rendered extraneous debug text across the canvas.
 - **Fix**:
-  - Extracted the authentic 640x480 AVerMedia splash bitmaps from the vendor driver installer (`aver_custom_no_signal.bmp`).
-  - Set window clear color and render target to solid black (`0, 0, 0, 255`).
-  - Removed all footer text and debug labels under the splash graphic, displaying only the official graphic centered on pure black.
+  - Set background clear color to solid black (`0, 0, 0, 255`).
+  - Removed extraneous debug text labels from the preview canvas.
 
 ### Issue 4: "Audio Buzzing During Mode Switches"
 - **Cause**:
@@ -167,5 +166,5 @@ Analyzing raw USB bus traffic recorded from live CV710 hardware (`host_u3cold.pc
 ## 5. Verification and Current Status
 
 1. **Clean Frame Render**: Frame 11 extracted from `host_u3cold.pcapng` verified 100% clean 1920x1080 progressive output with zero line shearing.
-2. **Build Cleanliness**: Compiles with zero warnings on GCC/Clang under Release, Debug, and AddressSanitizer (ASan) configurations.
-3. **Repository Polish**: Completely free of legacy device code, emojis, and em dashes. Dedicated exclusively to the AVerMedia CV710.
+2. **Build Cleanliness**: Compiles cleanly on GCC/Clang under Release, Debug, and AddressSanitizer (ASan) configurations.
+3. **Hardware Focus**: Dedicated exclusively to the AVerMedia CV710.

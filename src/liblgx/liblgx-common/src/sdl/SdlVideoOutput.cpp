@@ -362,12 +362,8 @@ namespace sdl {
         const char *paths[] = {
             "assets/aver_custom_no_signal.bmp",
             "../assets/aver_custom_no_signal.bmp",
-            "cv710userspace/assets/aver_custom_no_signal.bmp",
-            "lgx2-cv710/assets/aver_custom_no_signal.bmp",
-            "/home/hp/Projects/Piecap/cv710userspace/assets/aver_custom_no_signal.bmp",
-            "/home/hp/Projects/Piecap/lgx2-cv710/assets/aver_custom_no_signal.bmp",
-            "/usr/share/cv710userspace/assets/aver_custom_no_signal.bmp",
-            "/usr/share/lgx2userspace/assets/aver_custom_no_signal.bmp"
+            "/usr/local/share/cv710userspace/assets/aver_custom_no_signal.bmp",
+            "/usr/share/cv710userspace/assets/aver_custom_no_signal.bmp"
         };
         for (const char *path : paths) {
             SDL_Surface *surf = SDL_LoadBMP(path);

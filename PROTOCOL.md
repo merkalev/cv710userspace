@@ -1,7 +1,7 @@
 # USB Data Protocol: AVerMedia ExtremeCap U3 (CV710)
 
-## Credits and Acknowledgments
-MASSIVE CREDIT to ChrisAJS (https://github.com/ChrisAJS/lgx2userspace) for creating the original reverse-engineered protocol analysis, architecture, and userspace driver foundation upon which this work is built. This document continues and expands that work to cover the CV710 hardware protocol framing, FPGA checksum verification, audio framing, colorspace conversion, and official driver disassembly findings.
+## Credits
+Based on protocol research by ChrisAJS (https://github.com/ChrisAJS/lgx2userspace). This document details the USB bulk streaming protocol, packet framing, and checksum verification for the AVerMedia ExtremeCap U3 (CV710).
 
 ---
 
@@ -182,40 +182,17 @@ Runtime switching is supported via the 'C' hotkey, with command-line selection v
 
 ---
 
-## 6. Official Driver Reverse Engineering Discoveries
-
-Analysis of macOS `libC877Driver.dylib` and Windows `avmu3_x64.sys` revealed several key internal mechanisms:
-
-### Splash Screen Overlay Mechanism
-In `libC877Driver.dylib`:
-```cpp
-VideoParseBuffer::AttachAVerImage(unsigned char *buf, unsigned long len, AVER_OVERLAY_IMG img);
-```
-- Enum `AVER_OVERLAY_IMG`: 0 = No Signal, 1 = Out of Range, 2 = Busy, 3 = Mute.
-- The driver stores embedded 640x480 24-bit bitmaps:
-  - `aver_custom_no_signal.bmp`
-  - `aver_custom_out_of_range.bmp`
-  - `aver_custom_hdcp_protection.bmp`
-  - `aver_custom_content_protection.bmp`
-- When `CRXADV7604::ADIAPI_MwRxGetVideoFormat` reports signal loss, the driver centers the 640x480 bitmap into the 1920x1080 frame buffer at offsets `x = (1920 - 640) / 2 = 640` and `y = (1080 - 480) / 2 = 300`.
-- The userspace driver extracts and bundles these exact official bitmaps in `assets/`, rendering them centered on a solid black background (`0, 0, 0, 255`).
+## 6. Interlaced Video and FPGA Controls
 
 ### Interlaced Video Scanline Weaving
-In `libC877Driver.dylib`:
+For 1080i and 480i signals, the ADV7604 transmits alternating half-height fields (Top Field and Bottom Field). The interlace bit in the C0 header metadata word (`b2 & 0x80`) indicates dual-field interlaced video. Scanlines are woven into the output buffer:
 ```cpp
-VideoParseBuffer::copyDualFieldData(unsigned char *buf, unsigned long len, FIELD_INFO info, ...);
+dest[y * 2 * stride + x]       = field0[y * stride + x];
+dest[(y * 2 + 1) * stride + x] = field1[y * stride + x];
 ```
-- For 1080i and 480i signals, the ADV7604 transmits alternating half-height fields (Top Field and Bottom Field).
-- The driver weaves alternating scanlines into the final buffer:
-  `dest[y * 2 * stride + x] = field0[y * stride + x];`
-  `dest[(y * 2 + 1) * stride + x] = field1[y * stride + x];`
 
 ### Lattice ECP3 FPGA Scaler Controls
-In `Device.cpp` / `CLFE3.cpp`:
-- `CLFE3::setEnableFPGAScaler(signed char)`
-- `CLFE3::SetWorkMode()`
-- `CLFE3::SetInterPattern(signed char)`
-These functions control the hardware scaling and test pattern generator inside the Lattice ECP3 FPGA.
+The hardware FPGA contains internal registers controlling scaling and test pattern generation (`setEnableFPGAScaler`, `SetWorkMode`, `SetInterPattern`).
 
 ---
 

@@ -12,7 +12,6 @@ It captures uncompressed 1080p60 raw video and PCM audio directly over USB 3.0 b
 - **Color Correction**: Co-sited linear chroma reconstruction eliminates red color bleed. Real-time toggle between BT.709 limited/full range, BT.601, UYVY, and raw YUY2.
 - **Audio Watchdog**: Automatic muting during signal loss or mode changes to eliminate static and buzzing.
 - **V4L2 Loopback**: Feeds virtual video devices (`/dev/videoN`) for OBS Studio and browser conferencing.
-- **Native Splash Screen**: Clean black canvas with official AVerMedia "No Signal" graphics when HDMI disconnects.
 
 ---
 

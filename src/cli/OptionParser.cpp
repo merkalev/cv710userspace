@@ -64,12 +64,11 @@ bool app::OptionParser::process(int argc, char **argv) {
             case 'i': {
                 std::string inp = optarg;
                 if (inp == "component" || inp == "ypbpr") {
-                    _inputSource = lgx2::VideoInputSource::Component;
-                    std::cout << "Setting initial video input to: Component (YPbPr)" << std::endl;
+                    std::cout << "Notice: Component (YPbPr) input is unsupported. Using HDMI." << std::endl;
                 } else {
-                    _inputSource = lgx2::VideoInputSource::HDMI;
                     std::cout << "Setting initial video input to: HDMI" << std::endl;
                 }
+                _inputSource = lgx2::VideoInputSource::HDMI;
                 continue;
             }
             case 'S':
@@ -97,7 +96,7 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t-f Use a fake USB stream containing unprocessed frames from a dump.bin file\n"
                     "\t-S SCALE\tSpecify the output scaling (1, 2, 4)\n"
                     "\t-c COLORSPACE\tSpecify initial colorspace (bt709, bt709full, bt601, bt601full, uyvy, yuy2)\n"
-                    "\t-i INPUT\tSpecify initial video input source (hdmi, component)\n";
+                    "\t-i INPUT\tSpecify initial video input source (hdmi)\n";
                 return false;
             case -1:
                 break;

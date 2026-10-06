@@ -62,13 +62,11 @@ The application will initialize the hardware and stream 1080p60 uncompressed vid
 
 ### Options when running
 - `C`: Cycle colorspace profiles (BT.709 limited, BT.709 full range, BT.601, UYVY, raw YUY2).
-- `I`: Toggle input source between HDMI and Component Video (YPbPr).
 - `F`: Toggle fullscreen.
 - `G`: Exit fullscreen.
 - `Esc`: Quit application.
 
 Command-line flags:
-* `-i INPUT`: Set initial video input source (`hdmi` default, `component`).
 * `-c COLOR`: Set initial colorspace (`bt709`, `bt709full`, `bt601`, `bt601full`, `uyvy`, `yuy2`).
 * `-S SCALE`: Output scaling factor (`1` = full, `2` = half, `4` = quarter).
 * `-g`: Video only (disable audio output).

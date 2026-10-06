@@ -213,30 +213,19 @@ namespace libusb {
     }
 
     void UsbStream::setVideoInput(lgx2::VideoInputSource source) {
-        _inputSource = source;
+        if (source == lgx2::VideoInputSource::Component) {
+            printf("[Device] Component (YPbPr) input is unsupported (requires proprietary breakout cable and analog calibration). Maintaining HDMI.\n");
+            _inputSource = lgx2::VideoInputSource::HDMI;
+        } else {
+            _inputSource = source;
+        }
         if (!_dev) return;
 
-        if (source == lgx2::VideoInputSource::Component) {
-            printf("[Device] Selecting Component (YPbPr) video input...\n");
-            // ADV7604 IO map (0x20):
-            // PRIM_MODE = 0x01 (Component video: 525p, 625p, 720p, 1080i, 1080p)
-            sendI2cWrite(0x20, 0x00, 0x01);
-            sendI2cWrite(0x20, 0x01, 0x06);
-            sendI2cWrite(0x20, 0x02, 0xF0);
-            sendI2cWrite(0x20, 0x05, 0x2C);
-            // ADV7604 CP map (0x22): Enable color controls, brightness 0, contrast 0x80, hue 0, sat 0x80
-            sendI2cWrite(0x22, 0x3E, 0x80);
-            sendI2cWrite(0x22, 0x3C, 0x00);
-            sendI2cWrite(0x22, 0x3A, 0x80);
-            sendI2cWrite(0x22, 0x3D, 0x00);
-            sendI2cWrite(0x22, 0x3B, 0x80);
-        } else {
-            printf("[Device] Selecting HDMI video input...\n");
-            sendI2cWrite(0x20, 0x00, 0x08);
-            sendI2cWrite(0x20, 0x01, 0x06);
-            sendI2cWrite(0x20, 0x02, 0xFC);
-            sendI2cWrite(0x20, 0x05, 0x2C);
-        }
+        printf("[Device] Video input set to HDMI\n");
+        sendI2cWrite(0x20, 0x00, 0x08);
+        sendI2cWrite(0x20, 0x01, 0x06);
+        sendI2cWrite(0x20, 0x02, 0xFC);
+        sendI2cWrite(0x20, 0x05, 0x2C);
         fflush(stdout);
     }
 

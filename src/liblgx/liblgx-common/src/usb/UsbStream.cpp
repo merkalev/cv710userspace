@@ -378,7 +378,7 @@ namespace libusb {
     }
 
     void UsbStream::queueAllFrameReads() {
-        static constexpr int PIPELINE_DEPTH = 8;
+        static constexpr int PIPELINE_DEPTH = 16;
         for (int s = 0; s < PIPELINE_DEPTH; s++) {
             libusb_transfer *transfer = libusb_alloc_transfer(0);
             libusb_fill_bulk_transfer(transfer, _dev, LIBUSB_ENDPOINT_IN | 0x03,

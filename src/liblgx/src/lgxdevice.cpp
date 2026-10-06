@@ -64,27 +64,28 @@ namespace lgx2 {
         uint32_t height;
         uint32_t targetWords;
         const char *name;
+        bool valid;
     };
 
     static VideoMode detectVideoMode(uint32_t frameWords) {
-        // 1080p: target 1,036,800 words (tolerance for PLL sync adjustment: >= 800,000)
-        if (frameWords >= 800000) {
-            return {1920, 1080, 1036800, "1080p"};
+        // 1080p: target 1,036,800 words (tolerance: 1,020,000 to 1,045,000)
+        if (frameWords >= 1020000 && frameWords <= 1045000) {
+            return {1920, 1080, 1036800, "1080p", true};
         }
-        // 720p: target 460,800 words (tolerance: 350,000 to 799,999)
-        if (frameWords >= 350000 && frameWords < 800000) {
-            return {1280, 720, 460800, "720p"};
+        // 720p: target 460,800 words (tolerance: 450,000 to 472,000)
+        if (frameWords >= 450000 && frameWords <= 472000) {
+            return {1280, 720, 460800, "720p", true};
         }
-        // 576p: target 207,360 words (tolerance: 195,000 to 349,999)
-        if (frameWords >= 195000 && frameWords < 350000) {
-            return {720, 576, 207360, "576p"};
+        // 576p: target 207,360 words (tolerance: 202,000 to 212,000)
+        if (frameWords >= 202000 && frameWords <= 212000) {
+            return {720, 576, 207360, "576p", true};
         }
-        // 480p: target 172,800 words (tolerance: 80,000 to 194,999)
-        if (frameWords >= 80000 && frameWords < 195000) {
-            return {720, 480, 172800, "480p"};
+        // 480p: target 172,800 words (tolerance: 168,000 to 176,000)
+        if (frameWords >= 168000 && frameWords <= 176000) {
+            return {720, 480, 172800, "480p", true};
         }
-        // Fallback default
-        return {1920, 1080, 1036800, "1080p"};
+        // Incomplete / corrupted frame
+        return {0, 0, 0, "unknown", false};
     }
 
     void Device::onFrameData(uint8_t *data, uint32_t byteLength) {
@@ -183,8 +184,6 @@ namespace lgx2 {
                             // Transport gap (CPU lag / dropped USB transfers)
                             _droppedFrames++;
                             _consecutiveValidFrames = 0;
-                            _audioMuted = true;
-                            _audioOutput->clearAudio();
                         } else if (_inVideo && _frameBuilder.videoFrameSize() > 0) {
                             // Previous frame did not reach C1 before new C0
                             _droppedFrames++;
@@ -218,14 +217,37 @@ namespace lgx2 {
                 if (i + 1 < count && (d[i + 1] & 0xFF000000) == 0x38000000) {
                     // Genuine C1 trailer: active video frame is complete
                     uint32_t frameWords = _frameBuilder.videoFrameSize();
-                    if (frameWords >= MINIMUM_VIDEO_FRAME_WORDS) {
-                        VideoMode mode = detectVideoMode(frameWords);
-                        if (frameWords < mode.targetWords) {
-                            uint32_t *vData = _frameBuilder.videoFrameData();
-                            std::fill(vData + frameWords, vData + mode.targetWords, 0x80108010u);
+                    VideoMode mode = detectVideoMode(frameWords);
+                    if (mode.valid) {
+                        // Check mode stability hysteresis: require 5 consecutive matching frames
+                        if (mode.width == _activeWidth && mode.height == _activeHeight) {
+                            _pendingCount = 0;
+                        } else {
+                            if (mode.width == _pendingWidth && mode.height == _pendingHeight) {
+                                _pendingCount++;
+                                if (_pendingCount >= 5) {
+                                    printf("[Video] Mode switch locked: %ux%u (%s)\n", mode.width, mode.height, mode.name);
+                                    fflush(stdout);
+                                    _activeWidth = _pendingWidth;
+                                    _activeHeight = _pendingHeight;
+                                    _pendingCount = 0;
+                                }
+                            } else {
+                                _pendingWidth = mode.width;
+                                _pendingHeight = mode.height;
+                                _pendingCount = 1;
+                            }
                         }
-                        produceVideoData(mode.targetWords, mode.width, mode.height, reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
-                        _validFrames++;
+
+                        // Only deliver frame if it matches the locked active mode
+                        if (mode.width == _activeWidth && mode.height == _activeHeight) {
+                            if (frameWords < mode.targetWords) {
+                                uint32_t *vData = _frameBuilder.videoFrameData();
+                                std::fill(vData + frameWords, vData + mode.targetWords, 0x80108010u);
+                            }
+                            produceVideoData(mode.targetWords, _activeWidth, _activeHeight, reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
+                            _validFrames++;
+                        }
                     } else if (frameWords > 0) {
                         _droppedFrames++;
                         _consecutiveValidFrames = 0;

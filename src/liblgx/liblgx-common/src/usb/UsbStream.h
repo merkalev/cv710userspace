@@ -40,7 +40,7 @@ namespace libusb {
         bool sendI2cWrite(uint8_t slave7Bit, uint8_t reg, uint8_t val);
 
     private:
-        static constexpr int MAX_QUEUE_DEPTH = 32;
+        static constexpr int MAX_QUEUE_DEPTH = 128;
         int _droppedTransfers{0};
         int _queuedTransfers{0};
 

@@ -137,6 +137,13 @@ namespace lgx2 {
         uint32_t _droppedFrames{0};
         uint32_t _validFrames{0};
 
+        // Resolution stability hysteresis
+        uint32_t _activeWidth{1920};
+        uint32_t _activeHeight{1080};
+        uint32_t _pendingWidth{0};
+        uint32_t _pendingHeight{0};
+        uint32_t _pendingCount{0};
+
         bool _inVideo{false};
         bool _inAudio{false};
         uint32_t _remainingAudioWords{0};

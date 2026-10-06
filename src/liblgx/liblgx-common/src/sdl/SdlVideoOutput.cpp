@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <thread>
 
 namespace sdl {
 
@@ -220,72 +221,68 @@ namespace sdl {
         const int pairsPerDstRow = dstWidth / 2;
         const int srcStrideWords = srcWidth / 2;
 
-        for (int y = 0; y < dstHeight; y++) {
-            const uint32_t *srcRow = src + (y * step) * srcStrideWords;
-            uint32_t *dstRow = dst + y * dstWidth;
+        auto processRows = [&](int y_start, int y_end) {
+            for (int y = y_start; y < y_end; y++) {
+                const uint32_t *srcRow = src + (y * step) * srcStrideWords;
+                uint32_t *dstRow = dst + y * dstWidth;
 
-            for (int x = 0; x < pairsPerDstRow; x++) {
-                uint32_t word = srcRow[x * step];
-                uint8_t y0, u, y1, v;
+                for (int x = 0; x < pairsPerDstRow; x++) {
+                    uint32_t word = srcRow[x * step];
+                    uint8_t y0, u, y1, v;
 
-                if (!swapChroma) {
-                    // Standard YUY2: [Y0, U, Y1, V]
-                    y0 = word & 0xFF;
-                    u  = (word >> 8) & 0xFF;
-                    y1 = (word >> 16) & 0xFF;
-                    v  = (word >> 24) & 0xFF;
-                } else {
-                    // UYVY layout: [U, Y0, V, Y1]
-                    u  = word & 0xFF;
-                    y0 = (word >> 8) & 0xFF;
-                    v  = (word >> 16) & 0xFF;
-                    y1 = (word >> 24) & 0xFF;
-                }
-
-                // Co-sited chroma reconstruction:
-                // Pixel 0 (even) is co-sited with (u0, v0).
-                // Pixel 1 (odd) is centered halfway between pair x and pair x+1.
-                uint8_t u_next = u;
-                uint8_t v_next = v;
-                if (x + 1 < pairsPerDstRow) {
-                    uint32_t nextWord = srcRow[(x + 1) * step];
                     if (!swapChroma) {
-                        u_next = (nextWord >> 8) & 0xFF;
-                        v_next = (nextWord >> 24) & 0xFF;
+                        y0 = word & 0xFF;
+                        u  = (word >> 8) & 0xFF;
+                        y1 = (word >> 16) & 0xFF;
+                        v  = (word >> 24) & 0xFF;
                     } else {
-                        u_next = nextWord & 0xFF;
-                        v_next = (nextWord >> 16) & 0xFF;
+                        u  = word & 0xFF;
+                        y0 = (word >> 8) & 0xFF;
+                        v  = (word >> 16) & 0xFF;
+                        y1 = (word >> 24) & 0xFF;
                     }
+
+                    int u_val = static_cast<int>(u) - 128;
+                    int v_val = static_cast<int>(v) - 128;
+
+                    int r_off = cRV * v_val;
+                    int g_off = -(cGU * u_val + cGV * v_val);
+                    int b_off = cBU * u_val;
+
+                    int y0_scaled = cY * (static_cast<int>(y0) - y_off) + 32768;
+                    int y1_scaled = cY * (static_cast<int>(y1) - y_off) + 32768;
+
+                    uint8_t r0 = clamp8((y0_scaled + r_off) >> 16);
+                    uint8_t g0 = clamp8((y0_scaled + g_off) >> 16);
+                    uint8_t b0 = clamp8((y0_scaled + b_off) >> 16);
+
+                    uint8_t r1 = clamp8((y1_scaled + r_off) >> 16);
+                    uint8_t g1 = clamp8((y1_scaled + g_off) >> 16);
+                    uint8_t b1 = clamp8((y1_scaled + b_off) >> 16);
+
+                    // SDL_PIXELFORMAT_RGBA32 in memory (little-endian): R, G, B, A
+                    dstRow[x * 2]     = 0xFF000000u | (static_cast<uint32_t>(b0) << 16) | (static_cast<uint32_t>(g0) << 8) | r0;
+                    dstRow[x * 2 + 1] = 0xFF000000u | (static_cast<uint32_t>(b1) << 16) | (static_cast<uint32_t>(g1) << 8) | r1;
                 }
-
-                int u0_val = static_cast<int>(u) - 128;
-                int v0_val = static_cast<int>(v) - 128;
-                int u1_val = ((static_cast<int>(u) + static_cast<int>(u_next) + 1) >> 1) - 128;
-                int v1_val = ((static_cast<int>(v) + static_cast<int>(v_next) + 1) >> 1) - 128;
-
-                int r0_off = cRV * v0_val;
-                int g0_off = -(cGU * u0_val + cGV * v0_val);
-                int b0_off = cBU * u0_val;
-
-                int r1_off = cRV * v1_val;
-                int g1_off = -(cGU * u1_val + cGV * v1_val);
-                int b1_off = cBU * u1_val;
-
-                int y0_scaled = cY * (static_cast<int>(y0) - y_off) + 32768;
-                int y1_scaled = cY * (static_cast<int>(y1) - y_off) + 32768;
-
-                uint8_t r0 = clamp8((y0_scaled + r0_off) >> 16);
-                uint8_t g0 = clamp8((y0_scaled + g0_off) >> 16);
-                uint8_t b0 = clamp8((y0_scaled + b0_off) >> 16);
-
-                uint8_t r1 = clamp8((y1_scaled + r1_off) >> 16);
-                uint8_t g1 = clamp8((y1_scaled + g1_off) >> 16);
-                uint8_t b1 = clamp8((y1_scaled + b1_off) >> 16);
-
-                // SDL_PIXELFORMAT_RGBA32 in memory (little-endian): R, G, B, A
-                dstRow[x * 2]     = 0xFF000000u | (static_cast<uint32_t>(b0) << 16) | (static_cast<uint32_t>(g0) << 8) | r0;
-                dstRow[x * 2 + 1] = 0xFF000000u | (static_cast<uint32_t>(b1) << 16) | (static_cast<uint32_t>(g1) << 8) | r1;
             }
+        };
+
+        const int numThreads = std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, 8);
+        if (numThreads > 1 && dstHeight >= numThreads * 4) {
+            std::vector<std::thread> workers;
+            workers.reserve(numThreads - 1);
+            int rowsPerThread = dstHeight / numThreads;
+            for (int t = 1; t < numThreads; t++) {
+                int y_start = t * rowsPerThread;
+                int y_end = (t == numThreads - 1) ? dstHeight : (t + 1) * rowsPerThread;
+                workers.emplace_back(processRows, y_start, y_end);
+            }
+            processRows(0, rowsPerThread);
+            for (auto &w : workers) {
+                w.join();
+            }
+        } else {
+            processRows(0, dstHeight);
         }
     }
 

@@ -16,6 +16,7 @@ namespace app {
 
         lgx2::VideoScale scale();
         const std::string &colorspace() const { return _colorspace; }
+        lgx2::VideoInputSource inputSource() const { return _inputSource; }
 
     private:
         lgx2::VideoOutput *_videoOutput{nullptr};
@@ -25,6 +26,7 @@ namespace app {
         lgx2::Stream *_stream{nullptr};
         lgx2::VideoScale _scale{lgx2::VideoScale::Full};
         std::string _colorspace{"bt709"};
+        lgx2::VideoInputSource _inputSource{lgx2::VideoInputSource::HDMI};
     };
 }
 

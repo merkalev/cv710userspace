@@ -27,6 +27,56 @@ namespace sdl {
         }
     }
 
+    const char *SdlVideoOutput::colorspaceTitle(ColorspaceMode mode) {
+        switch (mode) {
+            case ColorspaceMode::BT709_Limited: return "BT.709 Limited Range (Default)";
+            case ColorspaceMode::BT709_Full:    return "BT.709 Full Range (PC / Mac)";
+            case ColorspaceMode::BT601_Limited: return "BT.601 Limited Range (SDTV)";
+            case ColorspaceMode::BT601_Full:    return "BT.601 Full Range (PC SD)";
+            case ColorspaceMode::UYVY_Swap:     return "UYVY Chroma Inversion Fix";
+            case ColorspaceMode::Direct_YUY2:   return "Direct Hardware YUY2 Passthrough";
+            default:                            return "Default Colorspace";
+        }
+    }
+
+    const char *SdlVideoOutput::colorspaceSubtitle(ColorspaceMode mode) {
+        switch (mode) {
+            case ColorspaceMode::BT709_Limited: return "Studio [16-235] | Co-sited Chroma";
+            case ColorspaceMode::BT709_Full:    return "Full [0-255] | Co-sited Chroma";
+            case ColorspaceMode::BT601_Limited: return "Rec.601 studio [16-235] | Co-sited Chroma";
+            case ColorspaceMode::BT601_Full:    return "Rec.601 full [0-255] | Co-sited Chroma";
+            case ColorspaceMode::UYVY_Swap:     return "Inverted U/Y byte order correction";
+            case ColorspaceMode::Direct_YUY2:   return "Raw hardware frame pass-through to GPU";
+            default:                            return "";
+        }
+    }
+
+    const char *SdlVideoOutput::colorspaceShortName(ColorspaceMode mode) {
+        switch (mode) {
+            case ColorspaceMode::BT709_Limited: return "BT.709";
+            case ColorspaceMode::BT709_Full:    return "BT.709 Full";
+            case ColorspaceMode::BT601_Limited: return "BT.601";
+            case ColorspaceMode::BT601_Full:    return "BT.601 Full";
+            case ColorspaceMode::UYVY_Swap:     return "UYVY";
+            case ColorspaceMode::Direct_YUY2:   return "YUY2";
+            default:                            return "Default";
+        }
+    }
+
+    void SdlVideoOutput::updateWindowTitle() {
+        if (!_window) return;
+        char title[128];
+        if (_targetScale == lgx2::VideoScale::Full) {
+            snprintf(title, sizeof(title), "cv710userspace - %dx%d [%s]",
+                     _srcWidth, _srcHeight, colorspaceShortName(_colorspaceMode));
+        } else {
+            int div = (_targetScale == lgx2::VideoScale::Half) ? 2 : 4;
+            snprintf(title, sizeof(title), "cv710userspace - %dx%d (1/%d) [%s]",
+                     _srcWidth, _srcHeight, div, colorspaceShortName(_colorspaceMode));
+        }
+        SDL_SetWindowTitle(_window, title);
+    }
+
     ColorspaceMode SdlVideoOutput::parseColorspace(const std::string &name) {
         if (name == "709full" || name == "bt709full" || name == "full") {
             return ColorspaceMode::BT709_Full;
@@ -54,6 +104,8 @@ namespace sdl {
 
     void SdlVideoOutput::initialiseVideo(lgx2::VideoScale scale) {
         _targetScale = scale;
+        _srcWidth = 1920;
+        _srcHeight = 1080;
         _texWidth = 1920;
         _texHeight = 1080;
 
@@ -77,10 +129,12 @@ namespace sdl {
         SDL_SetRenderVSync(_renderer, 0);
 
         delete[] _rgbaBuffer;
-        _rgbaBuffer = new uint32_t[1920 * 1080];
+        _rgbaCapacity = 1920 * 1080;
+        _rgbaBuffer = new uint32_t[_rgbaCapacity];
 
         updateTextureFormat();
         loadSplashBitmaps();
+        updateWindowTitle();
 
         SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL_RenderClear(_renderer);
@@ -113,13 +167,14 @@ namespace sdl {
         if ((oldMode == ColorspaceMode::Direct_YUY2) != (_colorspaceMode == ColorspaceMode::Direct_YUY2)) {
             updateTextureFormat();
         }
+        updateWindowTitle();
     }
 
     void SdlVideoOutput::setColorspace(const std::string &name) {
         setColorspace(parseColorspace(name));
     }
 
-    void SdlVideoOutput::convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int width, int height, int step) {
+    void SdlVideoOutput::convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int srcWidth, int dstWidth, int dstHeight, int step) {
         // Fixed-point 16-bit coefficients (scaled by 65536)
         int cY = 76309;
         int cRV = 117489;
@@ -162,12 +217,12 @@ namespace sdl {
                 break;
         }
 
-        const int pairsPerDstRow = width / 2;
-        const int srcStrideWords = 960; // 1920 / 2
+        const int pairsPerDstRow = dstWidth / 2;
+        const int srcStrideWords = srcWidth / 2;
 
-        for (int y = 0; y < height; y++) {
+        for (int y = 0; y < dstHeight; y++) {
             const uint32_t *srcRow = src + (y * step) * srcStrideWords;
-            uint32_t *dstRow = dst + y * width;
+            uint32_t *dstRow = dst + y * dstWidth;
 
             for (int x = 0; x < pairsPerDstRow; x++) {
                 uint32_t word = srcRow[x * step];
@@ -235,13 +290,50 @@ namespace sdl {
     }
 
     void SdlVideoOutput::videoFrameAvailable(uint32_t *image) {
-        if (!image || !_texture) return;
+        videoFrameAvailable(image, 1920, 1080);
+    }
+
+    void SdlVideoOutput::videoFrameAvailable(uint32_t *image, uint32_t width, uint32_t height) {
+        if (!image || !_renderer) return;
         _lastFrameTime = std::chrono::steady_clock::now();
         _hasSignal = true;
 
+        int targetW = static_cast<int>(width);
+        int targetH = static_cast<int>(height);
+        int step = 1;
+        if (_targetScale == lgx2::VideoScale::Half) {
+            targetW /= 2;
+            targetH /= 2;
+            step = 2;
+        } else if (_targetScale == lgx2::VideoScale::Quarter) {
+            targetW /= 4;
+            targetH /= 4;
+            step = 4;
+        }
+
+        if (width != static_cast<uint32_t>(_srcWidth) || height != static_cast<uint32_t>(_srcHeight) ||
+            targetW != _texWidth || targetH != _texHeight || !_texture) {
+            printf("[Video] Input resolution detected: %ux%u -> output texture %dx%d\n", width, height, targetW, targetH);
+            fflush(stdout);
+            _srcWidth = static_cast<int>(width);
+            _srcHeight = static_cast<int>(height);
+            _texWidth = targetW;
+            _texHeight = targetH;
+            updateTextureFormat();
+            updateWindowTitle();
+            _showOsd = true;
+            _osdTimestamp = _lastFrameTime;
+        }
+
+        if (static_cast<size_t>(_texWidth) * _texHeight > _rgbaCapacity) {
+            delete[] _rgbaBuffer;
+            _rgbaCapacity = static_cast<size_t>(_texWidth) * _texHeight;
+            _rgbaBuffer = new uint32_t[_rgbaCapacity];
+        }
+
         if (_colorspaceMode == ColorspaceMode::Direct_YUY2) {
-            if (_targetScale == lgx2::VideoScale::Full) {
-                if (!SDL_UpdateTexture(_texture, nullptr, image, 1920 * 2)) {
+            if (step == 1) {
+                if (!SDL_UpdateTexture(_texture, nullptr, image, width * 2)) {
                     fprintf(stderr, "SDL_UpdateTexture failed: %s\n", SDL_GetError());
                 }
                 _newFrameAvailable = true;
@@ -251,12 +343,12 @@ namespace sdl {
             int texW = _texWidth;
             int texH = _texHeight;
             int pairsPerRow = texW / 2;
-            int step = (_targetScale == lgx2::VideoScale::Half) ? 2 : 4;
+            int srcStride = width / 2;
 
             std::vector<uint32_t> buf(pairsPerRow * texH);
             for (int y = 0; y < texH; y++) {
                 for (int x = 0; x < pairsPerRow; x++) {
-                    buf[y * pairsPerRow + x] = image[(y * step) * 960 + x * step];
+                    buf[y * pairsPerRow + x] = image[(y * step) * srcStride + x * step];
                 }
             }
             if (!SDL_UpdateTexture(_texture, nullptr, buf.data(), texW * 2)) {
@@ -267,11 +359,7 @@ namespace sdl {
         }
 
         // RGBA software conversion modes
-        int step = 1;
-        if (_targetScale == lgx2::VideoScale::Half) step = 2;
-        else if (_targetScale == lgx2::VideoScale::Quarter) step = 4;
-
-        convertYuy2ToRgba(image, _rgbaBuffer, _texWidth, _texHeight, step);
+        convertYuy2ToRgba(image, _rgbaBuffer, width, _texWidth, _texHeight, step);
 
         if (!SDL_UpdateTexture(_texture, nullptr, _rgbaBuffer, _texWidth * 4)) {
             fprintf(stderr, "SDL_UpdateTexture failed: %s\n", SDL_GetError());
@@ -305,6 +393,7 @@ namespace sdl {
                     if ((oldMode == ColorspaceMode::Direct_YUY2) != (_colorspaceMode == ColorspaceMode::Direct_YUY2)) {
                         updateTextureFormat();
                     }
+                    updateWindowTitle();
                     _showOsd = true;
                     _osdTimestamp = now;
                     printf("[Video] Switched colorspace to: %s\n", colorspaceName(_colorspaceMode));
@@ -326,29 +415,60 @@ namespace sdl {
         if (_newFrameAvailable || _showOsd) {
             SDL_RenderTexture(_renderer, _texture, nullptr, nullptr);
 
-            // Render OSD banner if active
-            if (_showOsd && (now - _osdTimestamp < std::chrono::milliseconds(2500))) {
+            // Render sleek modern HUD badge if active
+            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - _osdTimestamp).count();
+            if (_showOsd && elapsedMs < 2500) {
+                uint8_t alpha = 255;
+                if (elapsedMs > 1800) {
+                    float fade = 1.0f - static_cast<float>(elapsedMs - 1800) / 700.0f;
+                    if (fade < 0.0f) fade = 0.0f;
+                    alpha = static_cast<uint8_t>(255.0f * fade);
+                }
+
                 int winW = 1920, winH = 1080;
                 SDL_GetWindowSize(_window, &winW, &winH);
 
-                float barW = 520.0f;
-                float barH = 46.0f;
-                float barX = 24.0f;
-                float barY = static_cast<float>(winH) - barH - 24.0f;
+                float cardW = 390.0f;
+                float cardH = 56.0f;
+                float cardX = static_cast<float>(winW) - cardW - 24.0f;
+                float cardY = 24.0f;
 
-                SDL_FRect bgRect{barX, barY, barW, barH};
-                SDL_SetRenderDrawColor(_renderer, 15, 20, 28, 220);
+                SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
+
+                // Main card background (deep translucent obsidian)
+                SDL_FRect bgRect{cardX, cardY, cardW, cardH};
+                SDL_SetRenderDrawColor(_renderer, 16, 20, 28, static_cast<uint8_t>(alpha * 225 / 255));
                 SDL_RenderFillRect(_renderer, &bgRect);
 
-                SDL_SetRenderDrawColor(_renderer, 33, 150, 243, 255);
+                // Subtle card border
+                SDL_SetRenderDrawColor(_renderer, 60, 75, 95, static_cast<uint8_t>(alpha * 180 / 255));
                 SDL_RenderRect(_renderer, &bgRect);
 
-                SDL_SetRenderScale(_renderer, 1.5f, 1.5f);
-                SDL_SetRenderDrawColor(_renderer, 255, 255, 255, 255);
-                char buf[128];
-                snprintf(buf, sizeof(buf), "Colorspace: %s", colorspaceName(_colorspaceMode));
-                SDL_RenderDebugText(_renderer, (barX + 16.0f) / 1.5f, (barY + 14.0f) / 1.5f, buf);
+                // Accent bar on the left edge
+                SDL_FRect accentRect{cardX, cardY, 4.0f, cardH};
+                uint8_t accR = 0, accG = 180, accB = 216; // BT709 Limited Cyan
+                switch (_colorspaceMode) {
+                    case ColorspaceMode::BT709_Full:    accR = 255; accG = 183; accB = 3;   break; // Amber
+                    case ColorspaceMode::BT601_Limited: accR = 6;   accG = 214; accB = 160; break; // Emerald
+                    case ColorspaceMode::BT601_Full:    accR = 138; accG = 201; accB = 38;  break; // Lime
+                    case ColorspaceMode::UYVY_Swap:     accR = 157; accG = 78;  accB = 221; break; // Violet
+                    case ColorspaceMode::Direct_YUY2:   accR = 58;  accG = 134; accB = 255; break; // Blue
+                    default: break;
+                }
+                SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);
+                SDL_RenderFillRect(_renderer, &accentRect);
+
+                // Line 1: Mode title (rendered at 1.0f scale: crisp native font)
                 SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
+                SDL_SetRenderDrawColor(_renderer, 255, 255, 255, alpha);
+                SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 12.0f, colorspaceTitle(_colorspaceMode));
+
+                // Line 2: Details (source resolution + technical subtitle)
+                char detailBuf[160];
+                snprintf(detailBuf, sizeof(detailBuf), "%ux%u | %s",
+                         _srcWidth, _srcHeight, colorspaceSubtitle(_colorspaceMode));
+                SDL_SetRenderDrawColor(_renderer, 160, 185, 215, static_cast<uint8_t>(alpha * 210 / 255));
+                SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 34.0f, detailBuf);
             } else if (_showOsd) {
                 _showOsd = false;
             }

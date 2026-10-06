@@ -32,8 +32,14 @@ void v4l::V4LFrameOutput::initialiseVideo(lgx2::VideoScale) {
     }
 }
 
+void v4l::V4LFrameOutput::videoFrameAvailable(uint32_t *image, uint32_t width, uint32_t height) {
+    size_t bytes = static_cast<size_t>(width) * height * 2;
+    if (bytes > 1920 * 1080 * 2) bytes = 1920 * 1080 * 2;
+    memcpy(_frameBuffer, image, bytes);
+}
+
 void v4l::V4LFrameOutput::videoFrameAvailable(uint32_t *image) {
-    memcpy(_frameBuffer, image, 1920 * 1080 * 2);
+    videoFrameAvailable(image, 1920, 1080);
 }
 
 void v4l::V4LFrameOutput::display() {

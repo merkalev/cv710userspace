@@ -56,6 +56,9 @@ int main(int argc, char **argv) {
 
     device.initialise(targetDevice, optionParser.scale());
 
+    lgx2::VideoInputSource currentSource = optionParser.inputSource();
+    device.setVideoInput(currentSource);
+
     signal(SIGTERM, [](int) {
         do_exit = true;
     });
@@ -70,6 +73,13 @@ int main(int argc, char **argv) {
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                     do_exit = true;
+                } else if (event.type == SDL_EVENT_KEY_DOWN) {
+                    if (event.key.key == SDLK_I) {
+                        currentSource = (currentSource == lgx2::VideoInputSource::HDMI)
+                                        ? lgx2::VideoInputSource::Component
+                                        : lgx2::VideoInputSource::HDMI;
+                        device.setVideoInput(currentSource);
+                    }
                 }
             }
             device.run();

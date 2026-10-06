@@ -26,6 +26,7 @@ namespace sdl {
         void initialiseVideo(lgx2::VideoScale scale) override;
 
         void videoFrameAvailable(uint32_t *image) override;
+        void videoFrameAvailable(uint32_t *image, uint32_t width, uint32_t height) override;
 
         void display() override;
 
@@ -37,13 +38,17 @@ namespace sdl {
         void setColorspace(const std::string &name);
         ColorspaceMode colorspace() const { return _colorspaceMode; }
         static const char *colorspaceName(ColorspaceMode mode);
+        static const char *colorspaceTitle(ColorspaceMode mode);
+        static const char *colorspaceSubtitle(ColorspaceMode mode);
+        static const char *colorspaceShortName(ColorspaceMode mode);
         static ColorspaceMode parseColorspace(const std::string &name);
 
     private:
+        void updateWindowTitle();
         void renderSplashScreen();
         void updateTextureFormat();
         void loadSplashBitmaps();
-        void convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int width, int height, int step);
+        void convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int srcWidth, int dstWidth, int dstHeight, int step);
 
         SDL_Window *_window{nullptr};
         SDL_Renderer *_renderer{nullptr};
@@ -53,6 +58,9 @@ namespace sdl {
 
         ColorspaceMode _colorspaceMode{ColorspaceMode::BT709_Limited};
         uint32_t *_rgbaBuffer{nullptr};
+        size_t _rgbaCapacity{0};
+        int _srcWidth{1920};
+        int _srcHeight{1080};
         int _texWidth{1920};
         int _texHeight{1080};
 

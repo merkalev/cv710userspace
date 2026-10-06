@@ -36,12 +36,16 @@ namespace libusb {
 
         void queueAllFrameReads();
 
+        void setVideoInput(lgx2::VideoInputSource source) override;
+        bool sendI2cWrite(uint8_t slave7Bit, uint8_t reg, uint8_t val);
+
     private:
         static constexpr int MAX_QUEUE_DEPTH = 32;
         int _droppedTransfers{0};
         int _queuedTransfers{0};
 
         libusb_device_handle *_dev;
+        lgx2::VideoInputSource _inputSource{lgx2::VideoInputSource::HDMI};
 
         std::vector<libusb_transfer *> _transfers;
         libusb_transfer *_probeTransfer{nullptr};

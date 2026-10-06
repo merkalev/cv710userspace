@@ -59,6 +59,34 @@ namespace lgx2 {
         _logger->logTimeEnd("audioOutput", "Audio output render");
     }
 
+    struct VideoMode {
+        uint32_t width;
+        uint32_t height;
+        uint32_t targetWords;
+        const char *name;
+    };
+
+    static VideoMode detectVideoMode(uint32_t frameWords) {
+        // 1080p: target 1,036,800 words (tolerance for PLL sync adjustment: >= 800,000)
+        if (frameWords >= 800000) {
+            return {1920, 1080, 1036800, "1080p"};
+        }
+        // 720p: target 460,800 words (tolerance: 350,000 to 799,999)
+        if (frameWords >= 350000 && frameWords < 800000) {
+            return {1280, 720, 460800, "720p"};
+        }
+        // 576p: target 207,360 words (tolerance: 195,000 to 349,999)
+        if (frameWords >= 195000 && frameWords < 350000) {
+            return {720, 576, 207360, "576p"};
+        }
+        // 480p: target 172,800 words (tolerance: 80,000 to 194,999)
+        if (frameWords >= 80000 && frameWords < 195000) {
+            return {720, 480, 172800, "480p"};
+        }
+        // Fallback default
+        return {1920, 1080, 1036800, "1080p"};
+    }
+
     void Device::onFrameData(uint8_t *data, uint32_t byteLength) {
         const uint32_t count = byteLength / 4;
         auto *d = reinterpret_cast<uint32_t *>(data);
@@ -178,7 +206,7 @@ namespace lgx2 {
                 }
 
                 // If not genuine C0: only treat as pixel if we are currently in active video
-                if (_inVideo && _frameBuilder.videoFrameSize() < CV710_1080P_FRAME_WORDS) {
+                if (_inVideo && _frameBuilder.videoFrameSize() < CV710_MAX_FRAME_WORDS) {
                     _frameBuilder.buildVideo(reinterpret_cast<uint8_t *>(d + i), 1);
                 }
                 i++;
@@ -191,11 +219,12 @@ namespace lgx2 {
                     // Genuine C1 trailer: active video frame is complete
                     uint32_t frameWords = _frameBuilder.videoFrameSize();
                     if (frameWords >= MINIMUM_VIDEO_FRAME_WORDS) {
-                        if (frameWords < CV710_1080P_FRAME_WORDS) {
+                        VideoMode mode = detectVideoMode(frameWords);
+                        if (frameWords < mode.targetWords) {
                             uint32_t *vData = _frameBuilder.videoFrameData();
-                            std::fill(vData + frameWords, vData + CV710_1080P_FRAME_WORDS, 0x80108010u);
+                            std::fill(vData + frameWords, vData + mode.targetWords, 0x80108010u);
                         }
-                        produceVideoData(CV710_1080P_FRAME_WORDS, reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
+                        produceVideoData(mode.targetWords, mode.width, mode.height, reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
                         _validFrames++;
                     } else if (frameWords > 0) {
                         _droppedFrames++;
@@ -215,7 +244,7 @@ namespace lgx2 {
                 }
 
                 // Lone C1: only treat as video word if in active video
-                if (_inVideo && _frameBuilder.videoFrameSize() < CV710_1080P_FRAME_WORDS) {
+                if (_inVideo && _frameBuilder.videoFrameSize() < CV710_MAX_FRAME_WORDS) {
                     _frameBuilder.buildVideo(reinterpret_cast<uint8_t *>(d + i), 1);
                 }
                 i++;
@@ -272,10 +301,10 @@ namespace lgx2 {
             // ONLY accumulate into video if we are in active video
             if (_inVideo) {
                 uint32_t curWords = _frameBuilder.videoFrameSize();
-                if (curWords < CV710_1080P_FRAME_WORDS) {
+                if (curWords < CV710_MAX_FRAME_WORDS) {
                     uint32_t slice = i - start;
-                    if (curWords + slice > CV710_1080P_FRAME_WORDS) {
-                        slice = CV710_1080P_FRAME_WORDS - curWords;
+                    if (curWords + slice > CV710_MAX_FRAME_WORDS) {
+                        slice = CV710_MAX_FRAME_WORDS - curWords;
                     }
                     if (slice > 0) {
                         _frameBuilder.buildVideo(reinterpret_cast<uint8_t *>(d + start), slice);
@@ -285,8 +314,8 @@ namespace lgx2 {
         }
     }
 
-    void Device::produceVideoData(uint32_t frameSize, uint8_t *data) {
-        _videoOutput->videoFrameAvailable((uint32_t *) data);
+    void Device::produceVideoData(uint32_t frameSize, uint32_t width, uint32_t height, uint8_t *data) {
+        _videoOutput->videoFrameAvailable((uint32_t *) data, width, height);
 
         auto now = std::chrono::steady_clock::now();
         _lastValidVideoTime = now;
@@ -296,7 +325,8 @@ namespace lgx2 {
         }
 
         if (_validFrames <= 5 || (_validFrames % 60) == 0) {
-            printf("[Debug] produceVideoData: valid=%u, drops=%u, size=%u\n", _validFrames, _droppedFrames, frameSize);
+            printf("[Debug] produceVideoData: valid=%u, drops=%u, %ux%u (%u words)\n",
+                   _validFrames, _droppedFrames, width, height, frameSize);
             fflush(stdout);
         }
 

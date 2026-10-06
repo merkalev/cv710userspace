@@ -12,6 +12,7 @@ namespace v4l {
         void initialiseVideo(lgx2::VideoScale scale) override;
 
         void videoFrameAvailable(uint32_t *image) override;
+        void videoFrameAvailable(uint32_t *image, uint32_t width, uint32_t height) override;
 
         void display() override;
 

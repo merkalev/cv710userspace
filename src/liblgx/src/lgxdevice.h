@@ -29,6 +29,11 @@ namespace lgx2 {
         virtual void summarise() = 0;
     };
 
+    enum class VideoInputSource {
+        HDMI,
+        Component
+    };
+
     class Stream {
     public:
         virtual ~Stream() = default;
@@ -41,6 +46,8 @@ namespace lgx2 {
         virtual void update() = 0;
 
         virtual void shutdownStream() = 0;
+
+        virtual void setVideoInput(VideoInputSource source) { (void)source; }
     };
 
     enum class VideoScale {
@@ -56,6 +63,12 @@ namespace lgx2 {
         virtual void initialiseVideo(VideoScale scale) = 0;
 
         virtual void videoFrameAvailable(uint32_t *image) = 0;
+
+        virtual void videoFrameAvailable(uint32_t *image, uint32_t width, uint32_t height) {
+            (void)width;
+            (void)height;
+            videoFrameAvailable(image);
+        }
 
         virtual void display() = 0;
 
@@ -93,6 +106,11 @@ namespace lgx2 {
         void run();
 
         void shutdown();
+        void setVideoInput(VideoInputSource source) {
+            if (_stream) {
+                _stream->setVideoInput(source);
+            }
+        }
 
     private:
         Stream *_stream;
@@ -105,9 +123,13 @@ namespace lgx2 {
 
         std::function<void(uint8_t *, uint32_t)> _onFrameData;
 
-        // CV710 1080p active frame size: 1920 * 1080 / 2 = 1,036,800 uint32 words
+        // CV710 frame size constants (1 uint32 word = 2 YUY2 pixels)
+        static constexpr uint32_t CV710_MAX_FRAME_WORDS   = 1920u * 1080u / 2u;
         static constexpr uint32_t CV710_1080P_FRAME_WORDS = 1920u * 1080u / 2u;
-        static constexpr uint32_t MINIMUM_VIDEO_FRAME_WORDS = 200000u;
+        static constexpr uint32_t CV710_720P_FRAME_WORDS  = 1280u * 720u  / 2u;
+        static constexpr uint32_t CV710_576P_FRAME_WORDS  = 720u  * 576u  / 2u;
+        static constexpr uint32_t CV710_480P_FRAME_WORDS  = 720u  * 480u  / 2u;
+        static constexpr uint32_t MINIMUM_VIDEO_FRAME_WORDS = 80000u;
 
         // CV710 protocol state
         bool _streamLocked{false};
@@ -132,7 +154,7 @@ namespace lgx2 {
 
         void onFrameData(uint8_t *data, uint32_t byteLength);
 
-        void produceVideoData(uint32_t frameSize, uint8_t *data);
+        void produceVideoData(uint32_t frameSize, uint32_t width, uint32_t height, uint8_t *data);
 
         void produceAudioData(uint8_t *data, uint32_t byteLength);
     };

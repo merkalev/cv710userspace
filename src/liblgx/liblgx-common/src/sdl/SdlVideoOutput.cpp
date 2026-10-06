@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <vector>
+#include <string>
 #include <algorithm>
 
 namespace sdl {
@@ -359,22 +360,34 @@ namespace sdl {
 
     void SdlVideoOutput::loadSplashBitmaps() {
         if (!_renderer) return;
-        const char *paths[] = {
-            "assets/aver_custom_no_signal.bmp",
-            "../assets/aver_custom_no_signal.bmp",
-            "/usr/local/share/cv710userspace/assets/aver_custom_no_signal.bmp",
-            "/usr/share/cv710userspace/assets/aver_custom_no_signal.bmp"
-        };
-        for (const char *path : paths) {
-            SDL_Surface *surf = SDL_LoadBMP(path);
+
+        std::vector<std::string> searchPaths;
+        searchPaths.emplace_back("assets/aver_custom_no_signal.bmp");
+        searchPaths.emplace_back("../assets/aver_custom_no_signal.bmp");
+
+        const char *basePath = SDL_GetBasePath();
+        if (basePath) {
+            std::string base(basePath);
+            searchPaths.push_back(base + "assets/aver_custom_no_signal.bmp");
+            searchPaths.push_back(base + "../assets/aver_custom_no_signal.bmp");
+            searchPaths.push_back(base + "../../assets/aver_custom_no_signal.bmp");
+            searchPaths.push_back(base + "../share/cv710userspace/assets/aver_custom_no_signal.bmp");
+        }
+
+        searchPaths.emplace_back("/usr/local/share/cv710userspace/assets/aver_custom_no_signal.bmp");
+        searchPaths.emplace_back("/usr/share/cv710userspace/assets/aver_custom_no_signal.bmp");
+
+        for (const auto &path : searchPaths) {
+            SDL_Surface *surf = SDL_LoadBMP(path.c_str());
             if (surf) {
                 _splashTexture = SDL_CreateTextureFromSurface(_renderer, surf);
                 SDL_DestroySurface(surf);
                 if (_splashTexture) {
-                    printf("[Video] Loaded official driver splash bitmap: %s\n", path);
+                    printf("[Video] Loaded standby splash bitmap: %s\n", path.c_str());
                     fflush(stdout);
+                    SDL_SetTextureScaleMode(_splashTexture, SDL_SCALEMODE_LINEAR);
+                    break;
                 }
-                break;
             }
         }
     }

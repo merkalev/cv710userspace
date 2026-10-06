@@ -8,6 +8,9 @@ It can be used to display captured video and audio in a standalone SDL3 window o
 
 There is also a Windows build. Instructions on how to use this can be found in [WINDOWS.md](WINDOWS.md).
 
+## Component Video Input Notice
+Component (YPbPr) analog video input is currently not supported. Capture on the ExtremeCap U3 is HDMI only. The component input requires a proprietary multi-pin analog breakout cable, ADV7604 analog front-end ADC calibration, sync slicer clock locking, and analog audio routing through the onboard TLV320AIC3101 codec. Attempting to switch inputs in software without these routines will only corrupt HDMI contrast/brightness levels.
+
 ## Building
 To build the project, you will need:
 * CMake (3.18+)

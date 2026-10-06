@@ -1,101 +1,109 @@
 # cv710userspace
 
-A Linux userspace driver and capture application for the **AVerMedia ExtremeCap U3 (CV710)** (USB ID `07ca:0710`), forked from [ChrisAJS/lgx2userspace](https://github.com/ChrisAJS/lgx2userspace).
+**Before continuing! This project aims to provide userspace capture support for the AVerMedia ExtremeCap U3 (CV710) capture card on Linux. The software is experimental, forked from [ChrisAJS/lgx2userspace](https://github.com/ChrisAJS/lgx2userspace), and provided without warranty.**
 
-It captures uncompressed 1080p60 raw video and PCM audio directly over USB 3.0 bulk endpoints using `libusb`, with output to an SDL3 preview window or a `v4l2loopback` virtual webcam (for OBS Studio, Discord, Zoom, etc.).
+This project contains a userspace driver for the [AVerMedia ExtremeCap U3 (CV710)](https://www.avermedia.com/) (USB ID `07ca:0710`).
 
----
+It can be used to display captured video and audio in a standalone SDL3 window or forward the captured stream to a virtual V4L2 loopback video capture device.
 
-## Features
+There is also a Windows build. Instructions on how to use this can be found in [WINDOWS.md](WINDOWS.md).
 
-- **Hardware Framing**: Protocol-level FPGA frame validation (`0x40` checksum and `0xC1` trailer verification) for rock-solid 60 fps sync without timing drift.
-- **Color Correction**: Co-sited linear chroma reconstruction eliminates red color bleed. Real-time toggle between BT.709 limited/full range, BT.601, UYVY, and raw YUY2.
-- **Audio Watchdog**: Automatic muting during signal loss or mode changes to eliminate static and buzzing.
-- **V4L2 Loopback**: Feeds virtual video devices (`/dev/videoN`) for OBS Studio and browser conferencing.
+## Building
+To build the project, you will need:
+* CMake (3.18+)
+* libusb (1.0)
+* SDL3
+* V4L2Loopback (optional, for virtual webcam output)
 
----
-
-## Requirements
-
-- Linux with a USB 3.0 controller
-- CMake 3.18+, C++17 compiler
-- `libusb-1.0`, `SDL3`, `v4l2loopback` (optional, for virtual camera)
-
-### Install Dependencies
-
-**Ubuntu / Debian (24.04+)**:
+### Ubuntu / Debian (24.04+)
 ```bash
-sudo apt install cmake g++ libusb-1.0-0-dev libsdl3-dev v4l2loopback-dkms
+sudo apt install cmake g++ libusb-1.0-0-dev libsdl3-dev v4l2loopback-dkms v4l2loopback-utils
 ```
 
-**Arch Linux**:
+### Arch Linux
 ```bash
-sudo pacman -S cmake gcc libusb sdl3 v4l2loopback-dkms
+sudo pacman -S cmake gcc libusb sdl3 v4l2loopback-dkms v4l2loopback-utils
 ```
 
-**Fedora**:
+### Fedora
 ```bash
 sudo dnf install cmake gcc-c++ libusb1-devel SDL3-devel v4l2loopback
 ```
 
----
-
-## Build & Install
+### Build Command
+Execute the following commands in the root of the project:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-### Udev Rules (Non-root USB Access)
+## Setup
+The userspace driver requires read and write access to the CV710 USB device.
+
+On Linux, permissions can be granted by adding the udev rules:
 
 ```bash
 sudo cp 99-avermedia-cv710.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
-After copying rules, unplug and reconnect the capture card.
 
----
+After adding the rules, unplug and re-plug the CV710.
 
-## Usage
+## Running
+Once udev has been configured, run the application:
 
-### Quick Start (SDL Preview)
 ```bash
 ./build/src/cli/cv710userspace
 ```
 
-### Stream to OBS / Virtual Camera
-```bash
-# 1. Create a loopback device
-sudo modprobe v4l2loopback video_nr=99 exclusive_caps=1 card_label="CV710"
+The application will initialize the hardware and stream 1080p60 uncompressed video and audio to an SDL3 preview window.
 
-# 2. Start capturing to the device
+### Options when running
+- `C`: Cycle colorspace profiles (BT.709 limited, BT.709 full range, BT.601, UYVY, raw YUY2).
+- `F`: Toggle fullscreen.
+- `G`: Exit fullscreen.
+- `Esc`: Quit application.
+
+Command-line flags:
+* `-c COLOR`: Set initial colorspace (`bt709`, `bt709full`, `bt601`, `bt601full`, `uyvy`, `yuy2`).
+* `-S SCALE`: Output scaling factor (`1` = 1080p, `2` = 540p, `4` = 270p).
+* `-g`: Video only (disable audio output).
+* `-s`: Audio only (disable video preview).
+* `-v`: Print diagnostic summary at exit.
+* `-V`: Print real-time diagnostic timing.
+
+## Running with V4L2 Output
+### V4L2 Output Setup
+To output video to a virtual webcam source (for OBS Studio, Discord, or web browsers), load the `v4l2loopback` module:
+
+```bash
+sudo modprobe v4l2loopback video_nr=99 exclusive_caps=1 card_label="CV710"
+```
+
+Verify that `/dev/video99` exists:
+
+```bash
+ls -l /dev/video99
+```
+
+### Running with a V4L2 Device
+Run the userspace driver with the `-d` option:
+
+```bash
 ./build/src/cli/cv710userspace -d /dev/video99
 ```
 
-### Options & Shortcuts
+Open OBS Studio or your preferred streaming software, add a Video Capture Device (V4L2), and select `CV710 (/dev/video99)`.
 
-| Key / Option | Action |
-|---|---|
-| `C` | Cycle colorspace profiles (BT.709, BT.709 Full, BT.601, UYVY, YUY2) |
-| `F` | Toggle Fullscreen |
-| `Esc` | Quit application |
-| `-c COLOR` | Set initial colorspace (`bt709`, `bt709full`, `bt601`, `bt601full`, `uyvy`, `yuy2`) |
-| `-S SCALE` | Downscale output (`1` = 1080p, `2` = 540p, `4` = 270p) |
-| `-d DEVICE` | Output to V4L2 loopback device (e.g. `/dev/video99`) |
-| `-g` | Video only (disable audio) |
-| `-s` | Audio only (disable video preview) |
+## Protocol Documentation
+Technical details on the USB bulk streaming protocol, packet framing markers, FPGA checksum validation, and audio format are documented in [PROTOCOL.md](PROTOCOL.md). Known hardware limitations are tracked in [ISSUES.md](ISSUES.md).
 
----
+## Attributions
+This project is forked from [lgx2userspace](https://github.com/ChrisAJS/lgx2userspace) by Chris Sawczuk (ChrisAJS) and uses the hard work of:
 
-## Documentation
-
-- [PROTOCOL.md](PROTOCOL.md): Wire protocol specification and packet framing details.
-- [ISSUES.md](ISSUES.md): Known hardware quirks and reverse engineering notes.
-- [devlog/01-cv710-hardware-framing.md](devlog/01-cv710-hardware-framing.md): Detailed reverse engineering devlog.
-
----
-
-## Credits & License
-
-Forked from [lgx2userspace](https://github.com/ChrisAJS/lgx2userspace) by Chris Sawczuk (ChrisAJS). Released under the [MIT License](LICENSE.md).
+* [libusb](https://libusb.info/)
+* [SDL3](https://www.libsdl.org/)
+* [V4L2Loopback](https://github.com/umlaeute/v4l2loopback)
+* [Catch2](https://github.com/catchorg/Catch2)

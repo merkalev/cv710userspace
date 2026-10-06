@@ -1,167 +1,185 @@
-# LGX2 Userspace driver (with LGX support)
-**Before continuing! This project aims to provide support for the LGX and LGX2 USB capture cards. The software is not extensively tested and the effects it has on the capture cards is also not fully understood. If you use the LGX and LGX2 on Windows using the official driver, using this userspace driver may prevent such a set up to continue working.**
+# cv710userspace
 
-**Please please please understand that you are risking your LGX or LGX2 by using this software.**
+## Massive Credit and Attribution
+This project is based on and extends the outstanding userspace capture driver originally designed and developed by **ChrisAJS** (https://github.com/ChrisAJS/lgx2userspace). Massive thanks and credit to ChrisAJS for reverse-engineering the USB stream format and laying the groundwork for Linux userspace capture on AVerMedia hardware.
 
-This software is little more than a POC and no guarantees of functionality are given and it may even be dangerous to use this software. Please
-consider contacting AverMedia for a supported Linux driver.
+---
 
-This project contains a userspace driver for the [AverMedia LGX2 (GC551)](https://avermedia.com/LGX2) as well support for the [AverMedia LGX (GC550)](https://avermedia.com/LGX).
+## Overview
 
-It can be used to display the captured video and audio in a standalone window or
-to forward the captured video and audio to a virtual video capture device.
+**cv710userspace** is a high-performance userspace driver and capture application dedicated exclusively to the **AVerMedia ExtremeCap U3 (CV710 / C877)** (USB ID `07ca:0710`) on Linux (and cross-platform).
 
-There is even an incredibly unnecessary Windows build. Instructions on how to use this can be found in [WINDOWS.md](WINDOWS.md). Spoiler, it's not recommended. 
+The application captures uncompressed raw video and audio directly over SuperSpeed USB bulk endpoints using `libusb` and presents them via:
+- An interactive standalone SDL3 preview window.
+- A virtual V4L2 loopback webcam device (`/dev/videoN`) ready for OBS Studio, Discord, Zoom, or Chromium.
 
-## LGX (GC550) Issues
-The LGX (GC550) will not be correctly configured by the official Windows driver after using this userspace driver on Linux (or the Windows build).
+---
 
-If you intend on using this userspace driver for your LGX, please understand that you will no longer be able to use the official driver to use the
-device.
+## Key Features
 
-To enable LGX (GC550) support, add `-DENABLE_LGX_GC550_SUPPORT=ON` to the `cmake` invocation.
+1. **Hardware Protocol Framing**:
+   - Eliminates legacy manual timing nudges and drift.
+   - Hardware FPGA checksum validation (`((b0 + b1 + b2 - 0x40) & 0xFF) == b3`).
+   - Hardware C1 trailer validation (`((b0 + b1 + b2 + b3 - 0x3F) & 0xFF) == b4`).
+   - Frame continuity tracking and single-frame transport gap resynchronization under CPU lag.
+   - Stable 60 fps active capture with zero memory leaks.
 
-**It cannot be stressed enough, that this currently will make your LGX (GC550) unusable on Windows using the official driver.**
+2. **Real-Time Colorspace Conversion & Linear Chroma Reconstruction**:
+   - Solves chromatic distortion (neon pink/green or amber tinting) when capturing from Apple MacBooks, iPads, or PC GPUs outputting RGB Full-Range over HDMI.
+   - Eliminates 1-pixel rightward red bleeding via co-sited linear horizontal chroma reconstruction ($C_{odd} = (C_0 + C_1)/2$).
+   - Supports 6 selectable colorspace profiles:
+     - `bt709` (BT.709 Limited Range: Standard 1080p HDTV Rec.709 Studio levels [16-235]) - Default
+     - `bt709full` (BT.709 Full Range: PC / Mac HDMI Full Range levels [0-255])
+     - `bt601` (BT.601 Limited Range: SDTV / Legacy consoles)
+     - `bt601full` (BT.601 Full Range: PC SD levels)
+     - `uyvy` (UYVY Swap: Inverts luma/chroma for devices sending UYVY)
+     - `yuy2` (Direct YUY2: Pass-through raw hardware stream to GPU shaders)
+   - Cycle modes at runtime using the `C` key, with visual On-Screen Display (OSD) feedback.
+
+3. **Audio Watchdog Muting (No Buzzing)**:
+   - HDMI audio clock regeneration (ACR) loses PLL lock during resolution switches, refresh rate changes, or cable disconnects.
+   - The driver gates audio production on active video sync. Audio is automatically muted and buffers are flushed during signal loss or sequence gaps, preventing buzzing or static through speakers.
+   - Audio is smoothly restored once 2 consecutive valid video frames arrive cleanly.
+
+4. **Official "No Signal" Splash Screen**:
+   - Integrates authentic 640x480 AVerMedia splash bitmaps extracted directly from the vendor driver (`aver_custom_no_signal.bmp`).
+   - Centered on a pure black canvas (`0, 0, 0, 255`) without bloat text or footer distractions.
+
+5. **Deep USB Queue Pipeline**:
+   - Drains transfers continuously without per-frame memory allocation using reusable buffer pools.
+   - Prevents USB transfer drops even under compositor or window manager stutter.
+
+---
 
 ## Building
-To build the project, you will need:
-* CMake
-* libusb
-* SDL3
-* V4L2Loopback
 
-### Ubuntu 24.04+
-The following packages need to be installed:
+### Prerequisites
+- CMake 3.18 or newer
+- C++17 compatible compiler
+- `libusb-1.0`
+- `SDL3`
+- `v4l2loopback` (for virtual camera output)
 
+### Package Installation
+
+#### Ubuntu / Debian (24.04+)
 ```bash
 sudo apt install cmake libusb-1.0-0-dev libsdl3-dev v4l2loopback-dkms v4l2loopback-utils
 ```
-### Arch Linux
-The following packages need to be installed:
 
+#### Arch Linux / Manjaro
 ```bash
 sudo pacman -S cmake libusb sdl3 v4l2loopback-dkms v4l2loopback-utils
 ```
 
-### Fedora
-The following packages need to be installed:
-
+#### Fedora
 ```bash
 sudo dnf install cmake libusb1-devel SDL3-devel v4l2loopback
 ```
 
-### Build Command
-With the dependencies installed for your environment it should be possible to build the application.
-
-Execute the following commands to build in the root of the project:
+### Compilation
 
 ```bash
-cmake -S . -B build
-cmake --build build
+# Configure and build Release target
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
 ```
 
-### Build options
-
-| Option | Default | Description |
-|---|---|---|
-| `ENABLE_LGX_GC550_SUPPORT` | `OFF` | Compile in support for the LGX (GC550). **Warning:** using this driver with a GC550 will prevent the official Windows driver from working on that device. See the LGX (GC550) Issues section. |
-| `LGX2_VERBOSE_STATS` | `OFF` | Print per-second frame rate and frame size statistics to stdout. Useful for diagnosing capture performance issues. |
-
-Pass options to cmake with `-D`, for example:
-
+For debugging with AddressSanitizer:
 ```bash
-cmake -S . -B build -DLGX2_VERBOSE_STATS=ON
-cmake --build build
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DENABLE_ASAN=ON
+cmake --build build-asan -j$(nproc)
 ```
 
-## Setup
-The userspace driver will require read and write access to the LGX/LGX2. 
+---
 
-On a Linux system, this can be granted to the user by adding the following rules to Udev.
+## Udev Rules Setup
+
+Linux requires non-root user permissions to access the USB capture endpoints:
 
 ```bash
-sudo cp 999-avermedia.rules /etc/udev/rules.d/999-avermedia.rules
+sudo cp 99-avermedia-cv710.rules /etc/udev/rules.d/99-avermedia-cv710.rules
 sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
 
-After the rule has been added, unplug and re-plug in the LGX/LGX2.
+After updating rules, unplug and reconnect the capture card.
 
-## Running
-Once udev has been configured to grant read and write permission to the device it
-will be possible to run the application by executing `lgx2userspace`.
+---
 
-If you are using the LGX GC550, use the command line option `x` - `./lgx2userspace -x`.
+## Usage
 
-The application will take a few seconds to run as it streams setup information to the device, 
-and it will eventually display a window that will then start to display captured frames.
-
-In my limited testing, certain devices may need to be re-plugged in after the application has 
-started. For example, a Nintendo Switch will not recognise the LGX/LGX2 as an output source until
-it is undocked and re-docked.
-
-### Common issues
-On occasion the LGX or LGX2 will fail to retrieve full frames. It may be required to unplug and re-plug the HDMI cable
-into the input of the device.
-
-If you attempt to run the application and it exits immediately, look at the error output, it may help diagnose the issue,
-which will likely be that you haven't installed the udev rules required to give your user permission to access the LGX or
-LGX2 without root access.
-
-### Options when running
-When using the default SDL renderer for video output, it is possible to toggle fullscreen
-by pressing `F` and to exit fullscreen by pressing `G`.
-
-### Gathering diagnostic information
-To help diagnose problems that may be fixed in the future, when submitting an issue
-please try to give as much information about your setup as possible and in the case of
-inadequate video or audio output, run the userspace driver with the `-v` switch enabled.
-
-With the `-v` switch enabled, the driver will output information regarding time taken to
-process frame data and time taken to render both audio and video.
-
-This information could be valuable when identifying issues so please try your best to include it
-in any issues you raise, thank you!
-
-## Running with V4L2 Output
-### V4L2 Output setup
-To output video to a virtual webcam output source, load the V4L2 Loopback Linux module with an easy to identify device
-number:
-
+### Basic Execution (SDL Preview Window)
 ```bash
-sudo modprobe v4l2loopback video_nr=99 exclusive_caps=1 card_label="LGX2"
+./build/src/cli/cv710userspace
 ```
 
-You should now see `/dev/video99` exists:
+The device will automatically be detected and stream at 1080p60.
 
+### Selecting Colorspace
 ```bash
-ls /dev/video99
-/dev/video99
+# Start directly in Mac/PC RGB Full-Range mode:
+./build/src/cli/cv710userspace -c bt709full
+
+# Start in direct hardware YUY2 mode:
+./build/src/cli/cv710userspace -c yuy2
 ```
 
-### Running with a V4L2 device
-Run the userspace driver with the `-d` option to specify which V4L2Loopback device to use:
+### Interactive Window Controls
+- `C`: Cycle colorspace profiles in real time (shows OSD notification).
+- `F`: Toggle Fullscreen mode.
+- `G`: Exit Fullscreen (return to windowed mode).
+- `Esc` or window close: Quit application.
 
+### Output Scaling (Lower CPU Usage)
 ```bash
-./lgx2userspace -d /dev/video99
+./build/src/cli/cv710userspace -S 2   # 1/2 scale (960x540)
+./build/src/cli/cv710userspace -S 4   # 1/4 scale (480x270)
 ```
 
-**NOTE: You may need to unplug and replug in your video source.**
+### Streaming to V4L2 Loopback (OBS Studio, Discord, Webcams)
 
-Go to OBS or other streaming software and select the LGX2 V4L2 source. You should now see video from the input device being output.
+1. Load the `v4l2loopback` kernel module:
+   ```bash
+   sudo modprobe v4l2loopback video_nr=99 exclusive_caps=1 card_label="CV710"
+   ```
 
-## Demo
-See it in action over at [YouTube](https://www.youtube.com/watch?v=-yzHMbUn-w0).
+2. Direct video output to `/dev/video99`:
+   ```bash
+   ./build/src/cli/cv710userspace -d /dev/video99
+   ```
 
-## Protocol documentation
-What is known (and unknown) about the USB bulk-transfer protocol the device uses
-to stream video and audio is documented in [PROTOCOL.md](PROTOCOL.md). This
-covers marker values, sub-chunk structure, frame assembly, audio packet layout,
-and known video source compatibility issues (MacBook colorspace, camera HDMI).
+3. Open OBS Studio, add a Video Capture Device (V4L2), and select `CV710 (/dev/video99)`.
 
-# Attributions
-This project uses the hard work of the following projects:
+---
 
- * [libusb](https://libusb.info/)
- * [V4L2Loopback](https://github.com/umlaeute/v4l2loopback)
- * [SDL3](https://www.libsdl.org/)
- * [Catch2](https://github.com/catchorg/Catch2)
+## Command Line Reference
+
+```
+cv710userspace usage:
+  -h            Print usage message
+  -c COLORSPACE Specify initial colorspace (bt709, bt709full, bt601, bt601full, uyvy, yuy2)
+  -S SCALE      Specify output scaling (1 = Full 1080p, 2 = Half 540p, 4 = Quarter 270p)
+  -d DEVICE     Specify V4L2 Loopback device node (e.g. /dev/video99)
+  -v            Print diagnostic timing summary at exit
+  -V            Print real-time diagnostic timing information during execution
+  -s            Output audio only (no video display)
+  -g            Output video only (no audio playback)
+  -f            Use fake USB stream from dump.bin file
+```
+
+---
+
+## Technical Documentation
+For in-depth reverse engineering analysis, FPGA checksum formulas, packet framing diagrams, and hardware register details, see:
+- [PROTOCOL.md](PROTOCOL.md): Wire protocol specification and packet framing details.
+- [ISSUES.md](ISSUES.md): Hardware quirks, interlaced weaving roadmap, and driver reverse-engineering notes.
+- [devlog/01-cv710-hardware-framing.md](devlog/01-cv710-hardware-framing.md): Detailed reverse-engineering journey and disassembly analysis.
+
+---
+
+## Attributions and Thanks
+- **ChrisAJS** (https://github.com/ChrisAJS/lgx2userspace): Original creator and architect of `lgx2userspace`.
+- **libusb project** (https://libusb.info/): SuperSpeed bulk USB communication.
+- **SDL project** (https://libsdl.org/): High performance audio and video display.
+- **V4L2Loopback** (https://github.com/umlaeute/v4l2loopback): Virtual webcam loopback driver.

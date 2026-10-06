@@ -10,7 +10,7 @@
 bool do_exit = false;
 
 int main(int argc, char **argv) {
-    std::cout << "lgx2userspace-sdl " << APP_VERSION << " ("<< GIT_BRANCH << "-" << GIT_REV << " - " << GIT_TAG << ")" << std::endl;
+    std::cout << "cv710userspace " << APP_VERSION << " ("<< GIT_BRANCH << "-" << GIT_REV << " - " << GIT_TAG << ")" << std::endl;
 
     app::OptionParser optionParser{};
 
@@ -28,7 +28,11 @@ int main(int argc, char **argv) {
     }
 
     if (videoOutput == nullptr) {
-        videoOutput = new sdl::SdlVideoOutput{};
+        auto *sdlVideo = new sdl::SdlVideoOutput{};
+        if (!optionParser.colorspace().empty()) {
+            sdlVideo->setColorspace(optionParser.colorspace());
+        }
+        videoOutput = sdlVideo;
     }
 
     if (audioOutput == nullptr) {
@@ -55,13 +59,16 @@ int main(int argc, char **argv) {
     signal(SIGTERM, [](int) {
         do_exit = true;
     });
+    signal(SIGINT, [](int) {
+        do_exit = true;
+    });
 
     SDL_Event event;
 
     try {
         while (!do_exit) {
             while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT) {
+                if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                     do_exit = true;
                 }
             }
@@ -74,6 +81,12 @@ int main(int argc, char **argv) {
     device.shutdown();
 
     logger->summarise();
+
+    delete stream;
+    delete videoOutput;
+    delete audioOutput;
+    delete logger;
+    delete errorSink;
 
     return 0;
 }

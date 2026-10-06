@@ -8,12 +8,15 @@ namespace sdl {
     class SdlAudioOutput : public lgx2::AudioOutput {
     public:
         SdlAudioOutput();
+        ~SdlAudioOutput() override;
 
         void initialiseAudio() override;
 
-        void audioFrameAvailable(uint32_t *audio) override;
+        void audioFrameAvailable(uint32_t *audio, uint32_t byteLength) override;
 
         void render() override;
+
+        void clearAudio() override;
 
         void shutdownAudio() override;
     private:

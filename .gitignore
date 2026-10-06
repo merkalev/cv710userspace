@@ -1,5 +1,30 @@
-.idea
-cmake-build-debug*
+# Build directories
 build/
+build-*/
+winbuild/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+
+# IDE and Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs and dumps
+*.log
+*.bin
+*.idx
+*.core
+core*
+*.ppm
+
+# Scratch directory
+scratch/
+
+# Generated headers
 src/version.h
-/src/liblgx/src/config.h
+src/liblgx/src/config.h

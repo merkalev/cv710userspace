@@ -8,7 +8,7 @@ namespace error {
         try {
             run();
         } catch(std::exception &e) {
-            MessageBox(nullptr, e.what(), "lgx2userspace error", MB_ICONERROR);
+            MessageBox(nullptr, e.what(), "cv710userspace error", MB_ICONERROR);
             exit(-1);
         }
     }

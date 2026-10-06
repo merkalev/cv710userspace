@@ -15,14 +15,16 @@ namespace app {
         lgx2::Stream *stream();
 
         lgx2::VideoScale scale();
+        const std::string &colorspace() const { return _colorspace; }
 
     private:
-        lgx2::VideoOutput *_videoOutput;
-        lgx2::AudioOutput *_audioOutput;
-        lgx2::Logger *_logger;
-        lgx2::DeviceType _deviceType{lgx2::DeviceType::LGX2};
+        lgx2::VideoOutput *_videoOutput{nullptr};
+        lgx2::AudioOutput *_audioOutput{nullptr};
+        lgx2::Logger *_logger{nullptr};
+        lgx2::DeviceType _deviceType{lgx2::DeviceType::CV710};
         lgx2::Stream *_stream{nullptr};
         lgx2::VideoScale _scale{lgx2::VideoScale::Full};
+        std::string _colorspace{"bt709"};
     };
 }
 

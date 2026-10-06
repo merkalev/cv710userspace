@@ -1,5 +1,6 @@
 #include "lgxdevice.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <climits>
@@ -10,8 +11,8 @@ namespace lgx2 {
 
     Device::Device(Stream *stream, VideoOutput *videoOutput, AudioOutput *audioOutput, Logger *logger, ErrorSink *errorSink)
             : _stream{stream}, _videoOutput{videoOutput}, _audioOutput{audioOutput}, _logger{logger}, _errorSink{errorSink} {
-        _onFrameData = [&](uint8_t *frameData) {
-            onFrameData(frameData);
+        _onFrameData = [&](uint8_t *frameData, uint32_t byteLength) {
+            onFrameData(frameData, byteLength);
         };
     }
 
@@ -35,6 +36,16 @@ namespace lgx2 {
     }
 
     void Device::run() {
+        auto now = std::chrono::steady_clock::now();
+        if (_lastValidVideoTime != std::chrono::steady_clock::time_point{} &&
+            (now - _lastValidVideoTime) > std::chrono::milliseconds(250)) {
+            if (!_audioMuted) {
+                _audioMuted = true;
+                _consecutiveValidFrames = 0;
+                _audioOutput->clearAudio();
+            }
+        }
+
         _logger->logTimeStart("streamUpdate");
         _stream->update();
         _logger->logTimeEnd("streamUpdate", "Stream update");
@@ -48,66 +59,228 @@ namespace lgx2 {
         _logger->logTimeEnd("audioOutput", "Audio output render");
     }
 
-    void Device::onFrameData(uint8_t *data) {
-        const uint32_t count = 0x1FC000 / 4;
+    void Device::onFrameData(uint8_t *data, uint32_t byteLength) {
+        const uint32_t count = byteLength / 4;
         auto *d = reinterpret_cast<uint32_t *>(data);
         uint32_t i = 0;
+        static uint32_t transferCount = 0;
+        if (++transferCount <= 5 || (transferCount % 60) == 0) {
+            printf("[Debug] onFrameData transfer #%u (%u bytes)\n", transferCount, byteLength);
+            fflush(stdout);
+        }
 
-        // Drain audio continuation from a previous transfer
+        // 1. Drain audio continuation if transfer boundary straddled audio payload
         if (_inAudio) {
-            uint32_t start = i;
-            while (i < count && d[i] != utils::FrameBuilder::AUDIO_FRAME_END_MARKER) i++;
-            _frameBuilder.buildAudio(data + start * 4, i - start);
-            if (i < count) {
-                _inAudio = 0;
-                produceAudioData(reinterpret_cast<uint8_t *>(_frameBuilder.completeAudioFrame()));
-                i++;
+            uint32_t avail = count - i;
+            uint32_t take = std::min(_remainingAudioWords, avail);
+            _frameBuilder.buildAudio(reinterpret_cast<uint8_t *>(d + i), take);
+            i += take;
+            _remainingAudioWords -= take;
+            if (_remainingAudioWords == 0) {
+                _inAudio = false;
+                uint32_t collectedBytes = _frameBuilder.audioFrameSize() * 4;
+                if (!_audioMuted && _consecutiveValidFrames >= 2) {
+                    produceAudioData(reinterpret_cast<uint8_t *>(_frameBuilder.completeAudioFrame()), collectedBytes);
+                } else {
+                    _frameBuilder.clearAudio();
+                }
+                _inAudioPadding = true;
             } else {
                 return;
             }
         }
 
-        // Sub-chunk structure (confirmed by hex dump):
-        //   [C0FFFF00][C3xxxxxx metadata][transition word][video data...][C1FFFF00]  (~16x/frame)
-        //   Audio packets [58FFFF00][pad][data...][AA5555AA] appear between video sub-chunks.
+        // 2. Initial lock hunt: discard any data before the first valid C0 header
+        if (!_streamLocked) {
+            _audioMuted = true;
+            _consecutiveValidFrames = 0;
+            _frameBuilder.clearAudio();
+            _frameBuilder.clearVideo();
+            _inVideo = false;
+            while (i + 1 < count) {
+                if (d[i] == utils::FrameBuilder::VIDEO_FRAME_START_MARKER) {
+                    uint32_t meta = d[i + 1];
+                    uint8_t b0 = meta & 0xFF;
+                    uint8_t b1 = (meta >> 8) & 0xFF;
+                    uint8_t b2 = (meta >> 16) & 0xFF;
+                    uint8_t b3 = (meta >> 24) & 0xFF;
+                    uint8_t chk = (b0 + b1 + b2 - 0x40) & 0xFF;
+                    static uint32_t c0Hunts = 0;
+                    if (++c0Hunts <= 10) {
+                        printf("[Debug] C0 candidate #%u at word %u: meta=0x%08x [b3=%02x, b2=%02x, b1=%02x, b0=%02x, chk=%02x, b1==1:%d, chk==b3:%d]\n",
+                               c0Hunts, i, meta, b3, b2, b1, b0, chk, (b1 == 0x01), (chk == b3));
+                        fflush(stdout);
+                    }
+                    if (b1 == 0x01 && (chk == b3)) {
+                        _streamLocked = true;
+                        _lastSeq = b0;
+                        _frameBuilder.clearVideo();
+                        _frameBuilder.clearAudio();
+                        _inAudioPadding = false;
+                        _inVideo = true;
+                        printf("[Debug] STREAM LOCKED to C0 at word %u, seq=0x%02x\n", i, b0);
+                        fflush(stdout);
+                        i += 2;
+                        break;
+                    }
+                }
+                i++;
+            }
+            if (!_streamLocked) return;
+        }
+
+        // 3. Main parser loop
         while (i < count) {
-            if (d[i] == utils::FrameBuilder::VIDEO_FRAME_END_MARKER) {
-                uint32_t frameSize = _frameBuilder.videoFrameSize();
-                if (frameSize >= MINIMUM_VIDEO_FRAME_SIZE) {
-                    auto *frame = _frameBuilder.completeVideoFrame();
-                    produceVideoData(frameSize, reinterpret_cast<uint8_t *>(frame));
-                }
-                // If below threshold, keep accumulating — this is a sub-frame chunk boundary.
-                i++;
-            } else if (d[i] == utils::FrameBuilder::VIDEO_FRAME_START_MARKER) {
-                // Sub-chunk header is 4 words: [C0FFFF00][metadata][word2][word3].
-                // Real video starts at the 5th word.
-                i += 4;
-            } else if (d[i] == utils::FrameBuilder::AUDIO_FRAME_END_MARKER) {
-                // Stray end marker — audio that started in a previous transfer was already
-                // drained at the top of this function, so this is trailing protocol data.
-                i++;
-            } else if (d[i] == utils::FrameBuilder::AUDIO_FRAME_START_MARKER) {
-                i += 2;  // skip marker + 1 padding word
-                uint32_t start = i;
-                while (i < count && d[i] != utils::FrameBuilder::AUDIO_FRAME_END_MARKER) i++;
-                _frameBuilder.buildAudio(data + start * 4, i - start);
+            // Skip audio padding (0xAA5555AA) up to the next marker
+            if (_inAudioPadding) {
+                while (i < count && d[i] == utils::FrameBuilder::AUDIO_FRAME_END_MARKER) i++;
                 if (i < count) {
-                    produceAudioData(reinterpret_cast<uint8_t *>(_frameBuilder.completeAudioFrame()));
-                    i++;
+                    _inAudioPadding = false;
                 } else {
-                    _inAudio = 1;
+                    break;
                 }
-            } else {
-                uint32_t start = i;
-                while (i < count
-                       && d[i] != utils::FrameBuilder::VIDEO_FRAME_END_MARKER
-                       && d[i] != utils::FrameBuilder::VIDEO_FRAME_START_MARKER
-                       && d[i] != utils::FrameBuilder::AUDIO_FRAME_START_MARKER
-                       && d[i] != utils::FrameBuilder::AUDIO_FRAME_END_MARKER) {
+            }
+
+            // Check for C0 (VIDEO_FRAME_START_MARKER)
+            if (d[i] == utils::FrameBuilder::VIDEO_FRAME_START_MARKER) {
+                if (i + 1 < count) {
+                    uint32_t meta = d[i + 1];
+                    uint8_t b0 = meta & 0xFF;
+                    uint8_t b1 = (meta >> 8) & 0xFF;
+                    uint8_t b2 = (meta >> 16) & 0xFF;
+                    uint8_t b3 = (meta >> 24) & 0xFF;
+                    if (b1 == 0x01 && (((b0 + b1 + b2 - 0x40) & 0xFF) == b3)) {
+                        // Genuine C0 header marks the start of a new video frame.
+                        if (_lastSeq >= 0 && b0 != ((_lastSeq + 1) & 0xFF)) {
+                            // Transport gap (CPU lag / dropped USB transfers)
+                            _droppedFrames++;
+                            _consecutiveValidFrames = 0;
+                            _audioMuted = true;
+                            _audioOutput->clearAudio();
+                        } else if (_inVideo && _frameBuilder.videoFrameSize() > 0) {
+                            // Previous frame did not reach C1 before new C0
+                            _droppedFrames++;
+                            _consecutiveValidFrames = 0;
+                        }
+
+                        _lastSeq = b0;
+                        _frameBuilder.clearVideo();
+                        _frameBuilder.clearAudio();
+                        _inAudio = false;
+                        _inAudioPadding = false;
+                        _inVideo = true;
+                        i += 2;
+                        continue;
+                    }
+                } else {
+                    // C0 straddles the end of transfer: stop here so next transfer validates it
+                    break;
+                }
+
+                // If not genuine C0: only treat as pixel if we are currently in active video
+                if (_inVideo && _frameBuilder.videoFrameSize() < CV710_1080P_FRAME_WORDS) {
+                    _frameBuilder.buildVideo(reinterpret_cast<uint8_t *>(d + i), 1);
+                }
+                i++;
+                continue;
+            }
+
+            // Check for C1 (VIDEO_FRAME_END_MARKER)
+            if (d[i] == utils::FrameBuilder::VIDEO_FRAME_END_MARKER) {
+                if (i + 1 < count && (d[i + 1] & 0xFF000000) == 0x38000000) {
+                    // Genuine C1 trailer: active video frame is complete
+                    uint32_t frameWords = _frameBuilder.videoFrameSize();
+                    if (frameWords >= MINIMUM_VIDEO_FRAME_WORDS) {
+                        if (frameWords < CV710_1080P_FRAME_WORDS) {
+                            uint32_t *vData = _frameBuilder.videoFrameData();
+                            std::fill(vData + frameWords, vData + CV710_1080P_FRAME_WORDS, 0x80108010u);
+                        }
+                        produceVideoData(CV710_1080P_FRAME_WORDS, reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
+                        _validFrames++;
+                    } else if (frameWords > 0) {
+                        _droppedFrames++;
+                        _consecutiveValidFrames = 0;
+                    }
+                    _frameBuilder.clearVideo();
+                    _inVideo = false;
+
+                    // Skip C1 marker + trailer words:
                     i++;
+                    if (i < count && (d[i] & 0xFF000000) == 0x38000000) i++;
+                    if (i < count && d[i] < 0x10000) i++;
+                    continue;
+                } else if (i + 1 >= count) {
+                    // C1 straddles transfer boundary: break so next transfer handles it
+                    break;
                 }
-                _frameBuilder.buildVideo(data + start * 4, i - start);
+
+                // Lone C1: only treat as video word if in active video
+                if (_inVideo && _frameBuilder.videoFrameSize() < CV710_1080P_FRAME_WORDS) {
+                    _frameBuilder.buildVideo(reinterpret_cast<uint8_t *>(d + i), 1);
+                }
+                i++;
+                continue;
+            }
+
+            // Check for 58 (AUDIO_FRAME_START_MARKER)
+            if (d[i] == utils::FrameBuilder::AUDIO_FRAME_START_MARKER) {
+                if (i + 1 < count) {
+                    uint32_t rawLen = d[i + 1];
+                    uint32_t audioBytes = (((rawLen >> 16) & 0xFF) << 8) | ((rawLen >> 24) & 0xFF);
+                    if (audioBytes >= 512 && audioBytes <= 8192) {
+                        uint32_t audioWords = audioBytes / 4;
+                        i += 2; // skip marker + len word
+                        uint32_t avail = count - i;
+                        uint32_t take = std::min(audioWords, avail);
+                        _frameBuilder.buildAudio(reinterpret_cast<uint8_t *>(d + i), take);
+                        i += take;
+                        _remainingAudioWords = audioWords - take;
+                        if (_remainingAudioWords == 0) {
+                            uint32_t collectedBytes = _frameBuilder.audioFrameSize() * 4;
+                            if (!_audioMuted && _consecutiveValidFrames >= 2) {
+                                produceAudioData(reinterpret_cast<uint8_t *>(_frameBuilder.completeAudioFrame()), collectedBytes);
+                            } else {
+                                _frameBuilder.clearAudio();
+                            }
+                            _inAudioPadding = true;
+                        } else {
+                            _inAudio = true;
+                        }
+                        continue;
+                    }
+                } else {
+                    // 58 straddles end of transfer
+                    break;
+                }
+
+                if (_inVideo && _frameBuilder.videoFrameSize() < CV710_1080P_FRAME_WORDS) {
+                    _frameBuilder.buildVideo(reinterpret_cast<uint8_t *>(d + i), 1);
+                }
+                i++;
+                continue;
+            }
+
+            // Slice up to the next marker
+            uint32_t start = i;
+            while (i < count &&
+                   d[i] != utils::FrameBuilder::VIDEO_FRAME_START_MARKER &&
+                   d[i] != utils::FrameBuilder::VIDEO_FRAME_END_MARKER &&
+                   d[i] != utils::FrameBuilder::AUDIO_FRAME_START_MARKER) {
+                i++;
+            }
+
+            // ONLY accumulate into video if we are in active video
+            if (_inVideo) {
+                uint32_t curWords = _frameBuilder.videoFrameSize();
+                if (curWords < CV710_1080P_FRAME_WORDS) {
+                    uint32_t slice = i - start;
+                    if (curWords + slice > CV710_1080P_FRAME_WORDS) {
+                        slice = CV710_1080P_FRAME_WORDS - curWords;
+                    }
+                    if (slice > 0) {
+                        _frameBuilder.buildVideo(reinterpret_cast<uint8_t *>(d + start), slice);
+                    }
+                }
             }
         }
     }
@@ -116,6 +289,17 @@ namespace lgx2 {
         _videoOutput->videoFrameAvailable((uint32_t *) data);
 
         auto now = std::chrono::steady_clock::now();
+        _lastValidVideoTime = now;
+        _consecutiveValidFrames++;
+        if (_consecutiveValidFrames >= 2) {
+            _audioMuted = false;
+        }
+
+        if (_validFrames <= 5 || (_validFrames % 60) == 0) {
+            printf("[Debug] produceVideoData: valid=%u, drops=%u, size=%u\n", _validFrames, _droppedFrames, frameSize);
+            fflush(stdout);
+        }
+
         _videoFrameCount++;
         if (frameSize < _minVideoFrameSize) _minVideoFrameSize = frameSize;
         if (frameSize > _maxVideoFrameSize) _maxVideoFrameSize = frameSize;
@@ -123,13 +307,13 @@ namespace lgx2 {
         if (_fpsTimestamp == std::chrono::steady_clock::time_point{}) {
             _fpsTimestamp = now;
         } else if (now - _fpsTimestamp >= std::chrono::seconds(1)) {
-#ifdef LGX2_VERBOSE_STATS
             auto elapsed = std::chrono::duration<double>(now - _fpsTimestamp).count();
-            printf("Frames: %" PRIu64 " (%.0f fps)  frame size min/max: %u/%u uint32s\n",
+            printf("Frames: %" PRIu64 " (%.1f fps)  drops: %u  valid: %u  size: %u uint32s\n",
                    _videoFrameCount,
                    static_cast<double>(_videoFrameCount) / elapsed,
-                   _minVideoFrameSize, _maxVideoFrameSize);
-#endif
+                   _droppedFrames, _validFrames,
+                   frameSize);
+            fflush(stdout);
             _fpsTimestamp = now;
             _videoFrameCount = 0;
             _minVideoFrameSize = UINT32_MAX;
@@ -137,9 +321,8 @@ namespace lgx2 {
         }
     }
 
-    void Device::produceAudioData(uint8_t *data) {
-
-        _audioOutput->audioFrameAvailable((uint32_t *) data);
+    void Device::produceAudioData(uint8_t *data, uint32_t byteLength) {
+        _audioOutput->audioFrameAvailable((uint32_t *) data, byteLength);
     }
 
     void Device::shutdown() {

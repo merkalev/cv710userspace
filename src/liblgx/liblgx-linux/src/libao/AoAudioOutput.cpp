@@ -18,8 +18,9 @@ namespace ao {
         _device = ao_open_live(0, &format, nullptr);
     }
 
-    void AoAudioOutput::audioFrameAvailable(uint32_t *audio) {
-        ao_play(_device, (char *) audio, 800 * 4);
+    void AoAudioOutput::audioFrameAvailable(uint32_t *audio, uint32_t byteLength) {
+        if (byteLength == 0 || audio == nullptr || !_device) return;
+        ao_play(_device, (char *) audio, byteLength);
     }
 
     void AoAudioOutput::render() {

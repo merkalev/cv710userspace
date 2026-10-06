@@ -5,10 +5,8 @@ pkg_check_modules(SDL3   REQUIRED IMPORTED_TARGET sdl3)
 pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 
 set(BOOTSTRAP_SOURCES
-        src/bootstrap/commanddata_lgx.cpp
-        src/bootstrap/commanddata_lgx.h
-        src/bootstrap/commanddata_lgx2.cpp
-        src/bootstrap/commanddata_lgx2.h)
+        src/bootstrap/commanddata_cv710.cpp
+        src/bootstrap/commanddata_cv710.h)
 
 set(SDLOUTPUT_SOURCES
         src/sdl/SdlVideoOutput.cpp
@@ -50,6 +48,4 @@ target_link_libraries(liblgx-common PUBLIC
         PkgConfig::SDL3
         PkgConfig::LIBUSB)
 
-if(ENABLE_LGX_GC550_SUPPORT)
-    target_compile_definitions(liblgx-common PUBLIC GC550_SUPPORT)
-endif()
+

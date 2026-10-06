@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <fstream>
 
-ChronoLogger::ChronoLogger(bool summaryOnly) : _logfile{"lgx2userspace.log", std::ios::app}, _summaryOnly{summaryOnly} {
+ChronoLogger::ChronoLogger(bool summaryOnly) : _logfile{"cv710userspace.log", std::ios::app}, _summaryOnly{summaryOnly} {
     _appStart = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
 

@@ -10,20 +10,18 @@
 namespace lgx2 {
 
     enum class DeviceType {
-
-#ifdef GC550_SUPPORT
-        LGX,
-#endif
-        LGX2
+        CV710
     };
 
     class ErrorSink {
     public:
+        virtual ~ErrorSink() = default;
         virtual void catchErrors(const std::function<void()> &run) = 0;
     };
 
     class Logger {
     public:
+        virtual ~Logger() = default;
         virtual void logTimeStart(const std::string &name) = 0;
 
         virtual void logTimeEnd(const std::string &name, const std::string &message) = 0;
@@ -38,7 +36,7 @@ namespace lgx2 {
 
         virtual void streamSetupCommands(DeviceType deviceType) = 0;
 
-        virtual void queueFrameRead(std::function<void(uint8_t *frameData)> *onData) = 0;
+        virtual void queueFrameRead(std::function<void(uint8_t *frameData, uint32_t byteLength)> *onData) = 0;
 
         virtual void update() = 0;
 
@@ -63,16 +61,21 @@ namespace lgx2 {
 
         virtual void shutdownVideo() = 0;
 
+        virtual void setStatus(const std::string &text) { (void)text; }
+
     private:
     };
 
     class AudioOutput {
     public:
+        virtual ~AudioOutput() = default;
         virtual void initialiseAudio() = 0;
 
-        virtual void audioFrameAvailable(uint32_t *audio) = 0;
+        virtual void audioFrameAvailable(uint32_t *audio, uint32_t byteLength) = 0;
 
         virtual void render() = 0;
+
+        virtual void clearAudio() {}
 
         virtual void shutdownAudio() = 0;
 
@@ -100,24 +103,38 @@ namespace lgx2 {
 
         utils::FrameBuilder _frameBuilder;
 
-        std::function<void(uint8_t *)> _onFrameData;
+        std::function<void(uint8_t *, uint32_t)> _onFrameData;
 
-        // Full 1080p YUY2 frame = 1,036,800 uint32s. C1FFFF00 is a sub-frame chunk
-        // delimiter (~16 chunks per frame); only produce once enough has accumulated.
-        static constexpr uint32_t MINIMUM_VIDEO_FRAME_SIZE = 1000000;
+        // CV710 1080p active frame size: 1920 * 1080 / 2 = 1,036,800 uint32 words
+        static constexpr uint32_t CV710_1080P_FRAME_WORDS = 1920u * 1080u / 2u;
+        static constexpr uint32_t MINIMUM_VIDEO_FRAME_WORDS = 200000u;
 
-        int _inAudio{0};
+        // CV710 protocol state
+        bool _streamLocked{false};
+        int _lastSeq{-1};
+        uint32_t _droppedFrames{0};
+        uint32_t _validFrames{0};
+
+        bool _inVideo{false};
+        bool _inAudio{false};
+        uint32_t _remainingAudioWords{0};
+        bool _inAudioPadding{false};
+
+        // Audio muting / video lock tracking
+        std::chrono::steady_clock::time_point _lastValidVideoTime{};
+        uint32_t _consecutiveValidFrames{0};
+        bool _audioMuted{true};
 
         uint64_t _videoFrameCount{0};
         uint32_t _maxVideoFrameSize{0};
         uint32_t _minVideoFrameSize{UINT32_MAX};
         std::chrono::steady_clock::time_point _fpsTimestamp{};
 
-        void onFrameData(uint8_t *data);
+        void onFrameData(uint8_t *data, uint32_t byteLength);
 
         void produceVideoData(uint32_t frameSize, uint8_t *data);
 
-        void produceAudioData(uint8_t *data);
+        void produceAudioData(uint8_t *data, uint32_t byteLength);
     };
 
 }

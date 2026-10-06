@@ -29,7 +29,7 @@ lgx2::VideoScale app::OptionParser::scale() {
 bool app::OptionParser::process(int argc, char **argv) {
     for(;;)
     {
-        switch(getopt(argc, argv, "vVd:hxsgfS:"))
+        switch(getopt(argc, argv, "vVd:hsgfS:c:"))
         {
 #ifndef __MINGW32__
 #ifndef __APPLE__
@@ -51,17 +51,15 @@ bool app::OptionParser::process(int argc, char **argv) {
                 std::cout <<"Logging diagnostics information - with output during execution " << std::endl;
                 _logger = new ChronoLogger(false);
                 continue;
-#ifdef GC550_SUPPORT
-            case 'x':
-                std::cout << "Using the LGX GC550 support" << std::endl;
-                _deviceType = lgx2::DeviceType::LGX;
-                continue;
-#endif
             case 's':
                 _videoOutput = new NullVideoOutput();
                 continue;
             case 'g':
                 _audioOutput = new NullAudioOutput();
+                continue;
+            case 'c':
+                _colorspace = optarg;
+                std::cout << "Setting initial colorspace to: " << _colorspace << std::endl;
                 continue;
             case 'S':
                 std::cout << "Setting output scaling to: 1/" << optarg << std::endl;
@@ -83,13 +81,11 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t-d V4L2LoopbackDevice\tSpecify the V4L2Loopback device to output video to (e.g. /dev/video99)\n"
 #endif
 #endif
-#ifdef GC550_SUPPORT
-                    "\t-x Use LGX (GC550) device specifically\n"
-#endif
                     "\t-s Output only sound\n"
                     "\t-g Output video only\n"
                     "\t-f Use a fake USB stream containing unprocessed frames from a dump.bin file\n"
-                    "\t-S SCALE\tSpecify the output scaling (1, 2, 4)\n";
+                    "\t-S SCALE\tSpecify the output scaling (1, 2, 4)\n"
+                    "\t-c COLORSPACE\tSpecify initial colorspace (bt709, bt709full, bt601, bt601full, uyvy, yuy2)\n";
                 return false;
             case -1:
                 break;

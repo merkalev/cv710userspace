@@ -22,15 +22,29 @@ namespace sdl {
         SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(_stream));
     }
 
-    void SdlAudioOutput::audioFrameAvailable(uint32_t *audio) {
-        SDL_PutAudioStreamData(_stream, audio, 800 * 4);
+    void SdlAudioOutput::audioFrameAvailable(uint32_t *audio, uint32_t byteLength) {
+        if (byteLength == 0 || audio == nullptr || !_stream) return;
+        SDL_PutAudioStreamData(_stream, audio, static_cast<int>(byteLength));
     }
 
     void SdlAudioOutput::render() {
     }
 
+    void SdlAudioOutput::clearAudio() {
+        if (_stream) {
+            SDL_ClearAudioStream(_stream);
+        }
+    }
+
+    SdlAudioOutput::~SdlAudioOutput() {
+        shutdownAudio();
+    }
+
     void SdlAudioOutput::shutdownAudio() {
-        SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(_stream));
-        SDL_DestroyAudioStream(_stream);
+        if (_stream) {
+            SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(_stream));
+            SDL_DestroyAudioStream(_stream);
+            _stream = nullptr;
+        }
     }
 }

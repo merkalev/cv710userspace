@@ -12,13 +12,13 @@ public:
 
     void streamSetupCommands(lgx2::DeviceType deviceType) override;
 
-    void queueFrameRead(std::function<void(uint8_t *)> *onData) override;
+    void queueFrameRead(std::function<void(uint8_t *, uint32_t)> *onData) override;
 
     void update() override;
 
     void shutdownStream() override;
 private:
-    std::function<void(uint8_t*)> *_onFrameDataCallback;
+    std::function<void(uint8_t*, uint32_t)> *_onFrameDataCallback;
 };
 
 

@@ -72,16 +72,20 @@ namespace lgx2 {
         if (frameWords >= 1020000 && frameWords <= 1045000) {
             return {1920, 1080, 1036800, "1080p", true};
         }
-        // 720p: target 460,800 words (tolerance: 450,000 to 472,000)
-        if (frameWords >= 450000 && frameWords <= 472000) {
+        // 720p standard: target 460,800 words (tolerance: 440,000 to 480,000)
+        if (frameWords >= 440000 && frameWords <= 480000) {
             return {1280, 720, 460800, "720p", true};
         }
-        // 576p: target 207,360 words (tolerance: 202,000 to 212,000)
-        if (frameWords >= 202000 && frameWords <= 212000) {
+        // 720p with blanking overhead (~520,000 to 540,000 words)
+        if (frameWords >= 520000 && frameWords <= 540000) {
+            return {1280, 720, 460800, "720p", true};
+        }
+        // 576p: target 207,360 words (tolerance: 195,000 to 220,000)
+        if (frameWords >= 195000 && frameWords <= 220000) {
             return {720, 576, 207360, "576p", true};
         }
-        // 480p: target 172,800 words (tolerance: 168,000 to 176,000)
-        if (frameWords >= 168000 && frameWords <= 176000) {
+        // 480p: target 172,800 words (tolerance: 160,000 to 185,000)
+        if (frameWords >= 160000 && frameWords <= 185000) {
             return {720, 480, 172800, "480p", true};
         }
         // Incomplete / corrupted frame
@@ -214,59 +218,79 @@ namespace lgx2 {
 
             // Check for C1 (VIDEO_FRAME_END_MARKER)
             if (d[i] == utils::FrameBuilder::VIDEO_FRAME_END_MARKER) {
-                if (i + 1 < count && (d[i + 1] & 0xFF000000) == 0x38000000) {
-                    // Genuine C1 trailer: active video frame is complete
-                    uint32_t frameWords = _frameBuilder.videoFrameSize();
-                    VideoMode mode = detectVideoMode(frameWords);
-                    if (mode.valid) {
-                        // Check mode stability hysteresis: require 5 consecutive matching frames
-                        if (mode.width == _activeWidth && mode.height == _activeHeight) {
-                            _pendingCount = 0;
-                        } else {
-                            if (mode.width == _pendingWidth && mode.height == _pendingHeight) {
-                                _pendingCount++;
-                                if (_pendingCount >= 5) {
-                                    printf("[Video] Mode switch locked: %ux%u (%s)\n", mode.width, mode.height, mode.name);
-                                    fflush(stdout);
-                                    _activeWidth = _pendingWidth;
-                                    _activeHeight = _pendingHeight;
-                                    _pendingCount = 0;
-                                }
-                            } else {
-                                _pendingWidth = mode.width;
-                                _pendingHeight = mode.height;
-                                _pendingCount = 1;
-                            }
-                        }
+                if (i + 1 < count) {
+                    uint32_t t1 = d[i + 1];
+                    uint8_t tb0 = t1 & 0xFF;
+                    uint8_t tb1 = (t1 >> 8) & 0xFF;
+                    uint8_t tb2 = (t1 >> 16) & 0xFF;
+                    uint8_t tb3 = (t1 >> 24) & 0xFF;
 
-                        // Only deliver frame if it matches the locked active mode
-                        if (mode.width == _activeWidth && mode.height == _activeHeight) {
-                            if (frameWords < mode.targetWords) {
-                                uint32_t *vData = _frameBuilder.videoFrameData();
-                                std::fill(vData + frameWords, vData + mode.targetWords, 0x80108010u);
+                    bool genuineC1 = false;
+                    if (tb1 == 0x02) {
+                        if (tb3 == 0x38 || tb3 == 0xD0) {
+                            genuineC1 = true;
+                        } else if (i + 2 < count) {
+                            uint8_t b4 = d[i + 2] & 0xFF;
+                            uint8_t expectedChk = (tb0 + tb1 + tb2 + tb3 - 0x3F) & 0xFF;
+                            if (expectedChk == b4) {
+                                genuineC1 = true;
                             }
-                            produceVideoData(mode.targetWords, _activeWidth, _activeHeight, reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
-                            _validFrames++;
                         }
-                    } else if (frameWords > 0) {
-                        static uint32_t lastPrintWords = 0;
-                        static uint32_t lastPrintCount = 0;
-                        if (frameWords != lastPrintWords || ++lastPrintCount % 60 == 0) {
-                            printf("[Video] Unmatched frameWords: %u (expected 1080p: ~1036800, 720p: ~460800)\n", frameWords);
-                            fflush(stdout);
-                            lastPrintWords = frameWords;
-                        }
-                        _droppedFrames++;
-                        _consecutiveValidFrames = 0;
                     }
-                    _frameBuilder.clearVideo();
-                    _inVideo = false;
 
-                    // Skip C1 marker + trailer words:
-                    i++;
-                    if (i < count && (d[i] & 0xFF000000) == 0x38000000) i++;
-                    if (i < count && d[i] < 0x10000) i++;
-                    continue;
+                    if (genuineC1) {
+                        // Genuine C1 trailer: active video frame is complete
+                        uint32_t frameWords = _frameBuilder.videoFrameSize();
+                        VideoMode mode = detectVideoMode(frameWords);
+                        if (mode.valid) {
+                            // Check mode stability hysteresis: require 5 consecutive matching frames
+                            if (mode.width == _activeWidth && mode.height == _activeHeight) {
+                                _pendingCount = 0;
+                            } else {
+                                if (mode.width == _pendingWidth && mode.height == _pendingHeight) {
+                                    _pendingCount++;
+                                    if (_pendingCount >= 5) {
+                                        printf("[Video] Mode switch locked: %ux%u (%s)\n", mode.width, mode.height, mode.name);
+                                        fflush(stdout);
+                                        _activeWidth = _pendingWidth;
+                                        _activeHeight = _pendingHeight;
+                                        _pendingCount = 0;
+                                    }
+                                } else {
+                                    _pendingWidth = mode.width;
+                                    _pendingHeight = mode.height;
+                                    _pendingCount = 1;
+                                }
+                            }
+
+                            // Only deliver frame if it matches the locked active mode
+                            if (mode.width == _activeWidth && mode.height == _activeHeight) {
+                                if (frameWords < mode.targetWords) {
+                                    uint32_t *vData = _frameBuilder.videoFrameData();
+                                    std::fill(vData + frameWords, vData + mode.targetWords, 0x80108010u);
+                                }
+                                produceVideoData(mode.targetWords, _activeWidth, _activeHeight, reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
+                                _validFrames++;
+                            }
+                        } else if (frameWords > 0) {
+                            static uint32_t lastPrintWords = 0;
+                            static uint32_t lastPrintCount = 0;
+                            if (frameWords != lastPrintWords || ++lastPrintCount % 60 == 0) {
+                                printf("[Video] Unmatched frameWords: %u (expected 1080p: ~1036800, 720p: ~460800)\n", frameWords);
+                                fflush(stdout);
+                                lastPrintWords = frameWords;
+                            }
+                            _droppedFrames++;
+                            _consecutiveValidFrames = 0;
+                        }
+                        _frameBuilder.clearVideo();
+                        _inVideo = false;
+
+                        // Skip C1 marker + trailer words:
+                        i += 2;
+                        if (i < count && (d[i] < 0x10000 || (d[i] & 0xFF000000) == 0x00000000)) i++;
+                        continue;
+                    }
                 } else if (i + 1 >= count) {
                     // C1 straddles transfer boundary: break so next transfer handles it
                     break;

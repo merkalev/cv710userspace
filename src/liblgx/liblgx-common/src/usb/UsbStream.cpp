@@ -78,6 +78,7 @@ static void usbTransferComplete(struct libusb_transfer *transfer) {
 
 namespace libusb {
     static const int LGX_DATA_FRAME_LEN = 0x1FC000;
+    static constexpr int PIPELINE_DEPTH = 7;
 
     UsbStream::UsbStream() : _dev{nullptr}, _onFrameDataCallback{} {
         libusb_init(nullptr);
@@ -101,7 +102,7 @@ namespace libusb {
         }
 
         libusb_free_device_list(list, (int) count);
-        _frameBuffer = new uint8_t[LGX_DATA_FRAME_LEN * 16];
+        _frameBuffer = new uint8_t[LGX_DATA_FRAME_LEN * PIPELINE_DEPTH];
 
         if (const char *rec = getenv("LGX_RECORD")) {
             const char *mb = getenv("LGX_RECORD_MB");
@@ -437,7 +438,6 @@ namespace libusb {
     }
 
     void UsbStream::queueAllFrameReads() {
-        static constexpr int PIPELINE_DEPTH = 16;
         for (int s = 0; s < PIPELINE_DEPTH; s++) {
             libusb_transfer *transfer = libusb_alloc_transfer(0);
             libusb_fill_bulk_transfer(transfer, _dev, LIBUSB_ENDPOINT_IN | 0x03,

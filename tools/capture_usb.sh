@@ -12,7 +12,15 @@ fi
 
 modprobe usbmon || true
 
-OUTPUT_FILE="${1:-cv710_res_switch.pcapng}"
+OUTPUT_FILE="${1:-res_switch.pcapng}"
+if [[ "$OUTPUT_FILE" != /* ]]; then
+  OUTPUT_FILE="$(pwd)/$OUTPUT_FILE"
+fi
+
+# dumpcap drops privileges to user wireshark or nobody on Linux.
+# Pre-create the destination file with write permissions for all users.
+touch "${OUTPUT_FILE}"
+chmod 666 "${OUTPUT_FILE}"
 
 echo "Starting USB capture on usbmon2..."
 echo "Saving to: ${OUTPUT_FILE}"

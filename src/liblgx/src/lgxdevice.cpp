@@ -78,43 +78,38 @@ namespace lgx2 {
         bool interlaced;
     };
 
-    static VideoMode detectVideoMode(uint32_t frameWords, uint8_t fieldFlags) {
-        bool isInterlaced = (fieldFlags & 0x80) != 0;
-
-        if (isInterlaced) {
-            // 1080i: 518,400 words per field (tolerance: 510,000 to 524,000)
-            if (frameWords >= 510000 && frameWords <= 524000) {
-                return {1920, 1080, 1036800, "1080i", true, true};
-            }
-            // 576i: 103,680 words per field (tolerance: 98,000 to 110,000)
-            if (frameWords >= 98000 && frameWords <= 110000) {
-                return {720, 576, 207360, "576i", true, true};
-            }
-            // 480i: 86,400 words per field (tolerance: 80,000 to 92,000)
-            if (frameWords >= 80000 && frameWords <= 92000) {
-                return {720, 480, 172800, "480i", true, true};
-            }
-        } else {
-            // 1080p: target 1,036,800 words (tolerance: 1,000,000 to 1,050,000)
-            if (frameWords >= 1000000 && frameWords <= 1050000) {
-                return {1920, 1080, 1036800, "1080p", true, false};
-            }
-            // 720p standard: target 460,800 words (tolerance: 440,000 to 480,000)
-            if (frameWords >= 440000 && frameWords <= 480000) {
-                return {1280, 720, 460800, "720p", true, false};
-            }
-            // 720p with blanking overhead (~526,000 to 545,000 words)
-            if (frameWords >= 526000 && frameWords <= 545000) {
-                return {1280, 720, 460800, "720p", true, false};
-            }
-            // 576p: target 207,360 words (tolerance: 195,000 to 220,000)
-            if (frameWords >= 195000 && frameWords <= 220000) {
-                return {720, 576, 207360, "576p", true, false};
-            }
-            // 480p: target 172,800 words (tolerance: 160,000 to 185,000)
-            if (frameWords >= 160000 && frameWords <= 185000) {
-                return {720, 480, 172800, "480p", true, false};
-            }
+    static VideoMode detectVideoMode(uint32_t frameWords) {
+        // 1080p: target 1,036,800 words (tolerance: 1,000,000 to 1,050,000)
+        if (frameWords >= 1000000 && frameWords <= 1050000) {
+            return {1920, 1080, 1036800, "1080p", true, false};
+        }
+        // 1080i: 518,400 words per field (tolerance: 510,000 to 524,000)
+        if (frameWords >= 510000 && frameWords <= 524000) {
+            return {1920, 1080, 1036800, "1080i", true, true};
+        }
+        // 720p standard: target 460,800 words (tolerance: 440,000 to 480,000)
+        if (frameWords >= 440000 && frameWords <= 480000) {
+            return {1280, 720, 460800, "720p", true, false};
+        }
+        // 720p with blanking overhead (~526,000 to 545,000 words)
+        if (frameWords >= 526000 && frameWords <= 545000) {
+            return {1280, 720, 460800, "720p", true, false};
+        }
+        // 576p: target 207,360 words (tolerance: 195,000 to 220,000)
+        if (frameWords >= 195000 && frameWords <= 220000) {
+            return {720, 576, 207360, "576p", true, false};
+        }
+        // 576i: 103,680 words per field (tolerance: 98,000 to 110,000)
+        if (frameWords >= 98000 && frameWords <= 110000) {
+            return {720, 576, 207360, "576i", true, true};
+        }
+        // 480p: target 172,800 words (tolerance: 160,000 to 185,000)
+        if (frameWords >= 160000 && frameWords <= 185000) {
+            return {720, 480, 172800, "480p", true, false};
+        }
+        // 480i: 86,400 words per field (tolerance: 80,000 to 92,000)
+        if (frameWords >= 80000 && frameWords <= 92000) {
+            return {720, 480, 172800, "480i", true, true};
         }
         // Incomplete / corrupted frame
         return {0, 0, 0, "unknown", false, false};
@@ -275,7 +270,7 @@ namespace lgx2 {
                     if (genuineC1) {
                         // Genuine C1 trailer: active video frame or field is complete
                         uint32_t frameWords = _frameBuilder.videoFrameSize();
-                        VideoMode mode = detectVideoMode(frameWords, _currentFieldFlags);
+                        VideoMode mode = detectVideoMode(frameWords);
                         if (mode.valid) {
                             // Check mode stability hysteresis: require 4 consecutive matching frames
                             if (mode.width == _activeWidth && mode.height == _activeHeight) {
@@ -302,7 +297,8 @@ namespace lgx2 {
                                 if (mode.interlaced) {
                                     uint32_t strideWords = mode.width / 2;
                                     uint32_t fieldLines = mode.height / 2;
-                                    bool oddField = (_currentFieldFlags & 0x01) != 0;
+                                    static uint32_t interlacedFieldCount = 0;
+                                    bool oddField = (interlacedFieldCount++ % 2) != 0;
                                     uint32_t *srcField = _frameBuilder.videoFrameData();
                                     for (uint32_t y = 0; y < fieldLines && (y * strideWords) < frameWords; y++) {
                                         uint32_t dstLine = oddField ? (y * 2 + 1) : (y * 2);

@@ -5,12 +5,14 @@
 #include <cinttypes>
 #include <climits>
 #include <cstdio>
+#include <cstring>
 #include <stdexcept>
 
 namespace lgx2 {
 
     Device::Device(Stream *stream, VideoOutput *videoOutput, AudioOutput *audioOutput, Logger *logger, ErrorSink *errorSink)
             : _stream{stream}, _videoOutput{videoOutput}, _audioOutput{audioOutput}, _logger{logger}, _errorSink{errorSink} {
+        _interlacedBuffer.resize(1920 * 1080 / 2, 0x80108010u);
         _onFrameData = [&](uint8_t *frameData, uint32_t byteLength) {
             onFrameData(frameData, byteLength);
         };
@@ -31,6 +33,7 @@ namespace lgx2 {
             _videoOutput->initialiseVideo(videoScale);
             _audioOutput->initialiseAudio();
 
+            _stream->queryVideoSignalStatus();
             _stream->queueFrameRead(&_onFrameData);
         });
     }
@@ -44,6 +47,13 @@ namespace lgx2 {
                 _consecutiveValidFrames = 0;
                 _audioOutput->clearAudio();
             }
+        }
+
+        // Automatic periodic hardware signal status query and standard alignment
+        if (_lastSignalCheck == std::chrono::steady_clock::time_point{} ||
+            (now - _lastSignalCheck) > std::chrono::milliseconds(1500)) {
+            _lastSignalCheck = now;
+            _stream->queryVideoSignalStatus();
         }
 
         _logger->logTimeStart("streamUpdate");
@@ -65,31 +75,49 @@ namespace lgx2 {
         uint32_t targetWords;
         const char *name;
         bool valid;
+        bool interlaced;
     };
 
-    static VideoMode detectVideoMode(uint32_t frameWords) {
-        // 1080p: target 1,036,800 words (tolerance: 1,020,000 to 1,045,000)
-        if (frameWords >= 1020000 && frameWords <= 1045000) {
-            return {1920, 1080, 1036800, "1080p", true};
-        }
-        // 720p standard: target 460,800 words (tolerance: 440,000 to 480,000)
-        if (frameWords >= 440000 && frameWords <= 480000) {
-            return {1280, 720, 460800, "720p", true};
-        }
-        // 720p with blanking overhead (~520,000 to 540,000 words)
-        if (frameWords >= 520000 && frameWords <= 540000) {
-            return {1280, 720, 460800, "720p", true};
-        }
-        // 576p: target 207,360 words (tolerance: 195,000 to 220,000)
-        if (frameWords >= 195000 && frameWords <= 220000) {
-            return {720, 576, 207360, "576p", true};
-        }
-        // 480p: target 172,800 words (tolerance: 160,000 to 185,000)
-        if (frameWords >= 160000 && frameWords <= 185000) {
-            return {720, 480, 172800, "480p", true};
+    static VideoMode detectVideoMode(uint32_t frameWords, uint8_t fieldFlags) {
+        bool isInterlaced = (fieldFlags & 0x80) != 0;
+
+        if (isInterlaced) {
+            // 1080i: 518,400 words per field (tolerance: 510,000 to 524,000)
+            if (frameWords >= 510000 && frameWords <= 524000) {
+                return {1920, 1080, 1036800, "1080i", true, true};
+            }
+            // 576i: 103,680 words per field (tolerance: 98,000 to 110,000)
+            if (frameWords >= 98000 && frameWords <= 110000) {
+                return {720, 576, 207360, "576i", true, true};
+            }
+            // 480i: 86,400 words per field (tolerance: 80,000 to 92,000)
+            if (frameWords >= 80000 && frameWords <= 92000) {
+                return {720, 480, 172800, "480i", true, true};
+            }
+        } else {
+            // 1080p: target 1,036,800 words (tolerance: 1,000,000 to 1,050,000)
+            if (frameWords >= 1000000 && frameWords <= 1050000) {
+                return {1920, 1080, 1036800, "1080p", true, false};
+            }
+            // 720p standard: target 460,800 words (tolerance: 440,000 to 480,000)
+            if (frameWords >= 440000 && frameWords <= 480000) {
+                return {1280, 720, 460800, "720p", true, false};
+            }
+            // 720p with blanking overhead (~526,000 to 545,000 words)
+            if (frameWords >= 526000 && frameWords <= 545000) {
+                return {1280, 720, 460800, "720p", true, false};
+            }
+            // 576p: target 207,360 words (tolerance: 195,000 to 220,000)
+            if (frameWords >= 195000 && frameWords <= 220000) {
+                return {720, 576, 207360, "576p", true, false};
+            }
+            // 480p: target 172,800 words (tolerance: 160,000 to 185,000)
+            if (frameWords >= 160000 && frameWords <= 185000) {
+                return {720, 480, 172800, "480p", true, false};
+            }
         }
         // Incomplete / corrupted frame
-        return {0, 0, 0, "unknown", false};
+        return {0, 0, 0, "unknown", false, false};
     }
 
     void Device::onFrameData(uint8_t *data, uint32_t byteLength) {
@@ -183,7 +211,8 @@ namespace lgx2 {
                     uint8_t b2 = (meta >> 16) & 0xFF;
                     uint8_t b3 = (meta >> 24) & 0xFF;
                     if (b1 == 0x01 && (((b0 + b1 + b2 - 0x40) & 0xFF) == b3)) {
-                        // Genuine C0 header marks the start of a new video frame.
+                        // Genuine C0 header marks the start of a new video frame / field.
+                        _currentFieldFlags = b2;
                         if (_lastSeq >= 0 && b0 != ((_lastSeq + 1) & 0xFF)) {
                             // Transport gap (CPU lag / dropped USB transfers)
                             _droppedFrames++;
@@ -218,38 +247,43 @@ namespace lgx2 {
 
             // Check for C1 (VIDEO_FRAME_END_MARKER)
             if (d[i] == utils::FrameBuilder::VIDEO_FRAME_END_MARKER) {
-                if (i + 1 < count) {
+                if (i + 2 < count) {
                     uint32_t t1 = d[i + 1];
                     uint8_t tb0 = t1 & 0xFF;
                     uint8_t tb1 = (t1 >> 8) & 0xFF;
                     uint8_t tb2 = (t1 >> 16) & 0xFF;
                     uint8_t tb3 = (t1 >> 24) & 0xFF;
 
+                    uint32_t t2 = d[i + 2];
+                    uint8_t b4 = t2 & 0xFF;
+                    uint8_t expectedChk = (tb0 + tb1 + tb2 + tb3 - 0x3F) & 0xFF;
+
                     bool genuineC1 = false;
-                    if (tb1 == 0x02) {
-                        if (tb3 == 0x38 || tb3 == 0xD0) {
-                            genuineC1 = true;
-                        } else if (i + 2 < count) {
-                            uint8_t b4 = d[i + 2] & 0xFF;
-                            uint8_t expectedChk = (tb0 + tb1 + tb2 + tb3 - 0x3F) & 0xFF;
-                            if (expectedChk == b4) {
+                    // Strict C1 trailer validation:
+                    // 1. tb1 must be 0x02
+                    // 2. Hardware FPGA checksum formula MUST match b4
+                    // 3. Sequence counter must match current frame sequence
+                    // 4. Must have accumulated at least minimal valid field/frame size (>= 70,000 words)
+                    if (tb1 == 0x02 && expectedChk == b4) {
+                        if (_lastSeq < 0 || tb0 == static_cast<uint8_t>(_lastSeq)) {
+                            if (_frameBuilder.videoFrameSize() >= 70000) {
                                 genuineC1 = true;
                             }
                         }
                     }
 
                     if (genuineC1) {
-                        // Genuine C1 trailer: active video frame is complete
+                        // Genuine C1 trailer: active video frame or field is complete
                         uint32_t frameWords = _frameBuilder.videoFrameSize();
-                        VideoMode mode = detectVideoMode(frameWords);
+                        VideoMode mode = detectVideoMode(frameWords, _currentFieldFlags);
                         if (mode.valid) {
-                            // Check mode stability hysteresis: require 5 consecutive matching frames
+                            // Check mode stability hysteresis: require 4 consecutive matching frames
                             if (mode.width == _activeWidth && mode.height == _activeHeight) {
                                 _pendingCount = 0;
                             } else {
                                 if (mode.width == _pendingWidth && mode.height == _pendingHeight) {
                                     _pendingCount++;
-                                    if (_pendingCount >= 5) {
+                                    if (_pendingCount >= 4) {
                                         printf("[Video] Mode switch locked: %ux%u (%s)\n", mode.width, mode.height, mode.name);
                                         fflush(stdout);
                                         _activeWidth = _pendingWidth;
@@ -265,18 +299,35 @@ namespace lgx2 {
 
                             // Only deliver frame if it matches the locked active mode
                             if (mode.width == _activeWidth && mode.height == _activeHeight) {
-                                if (frameWords < mode.targetWords) {
-                                    uint32_t *vData = _frameBuilder.videoFrameData();
-                                    std::fill(vData + frameWords, vData + mode.targetWords, 0x80108010u);
+                                if (mode.interlaced) {
+                                    uint32_t strideWords = mode.width / 2;
+                                    uint32_t fieldLines = mode.height / 2;
+                                    bool oddField = (_currentFieldFlags & 0x01) != 0;
+                                    uint32_t *srcField = _frameBuilder.videoFrameData();
+                                    for (uint32_t y = 0; y < fieldLines && (y * strideWords) < frameWords; y++) {
+                                        uint32_t dstLine = oddField ? (y * 2 + 1) : (y * 2);
+                                        memcpy(_interlacedBuffer.data() + dstLine * strideWords,
+                                               srcField + y * strideWords,
+                                               strideWords * sizeof(uint32_t));
+                                    }
+                                    produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
+                                                     reinterpret_cast<uint8_t *>(_interlacedBuffer.data()));
+                                    _validFrames++;
+                                } else {
+                                    if (frameWords < mode.targetWords) {
+                                        uint32_t *vData = _frameBuilder.videoFrameData();
+                                        std::fill(vData + frameWords, vData + mode.targetWords, 0x80108010u);
+                                    }
+                                    produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
+                                                     reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
+                                    _validFrames++;
                                 }
-                                produceVideoData(mode.targetWords, _activeWidth, _activeHeight, reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
-                                _validFrames++;
                             }
                         } else if (frameWords > 0) {
                             static uint32_t lastPrintWords = 0;
                             static uint32_t lastPrintCount = 0;
                             if (frameWords != lastPrintWords || ++lastPrintCount % 60 == 0) {
-                                printf("[Video] Unmatched frameWords: %u (expected 1080p: ~1036800, 720p: ~460800)\n", frameWords);
+                                printf("[Video] Unmatched frameWords: %u (expected 1080p: ~1036800, 720p: ~460800, 1080i: ~518400)\n", frameWords);
                                 fflush(stdout);
                                 lastPrintWords = frameWords;
                             }
@@ -291,7 +342,7 @@ namespace lgx2 {
                         if (i < count && (d[i] < 0x10000 || (d[i] & 0xFF000000) == 0x00000000)) i++;
                         continue;
                     }
-                } else if (i + 1 >= count) {
+                } else if (i + 2 >= count) {
                     // C1 straddles transfer boundary: break so next transfer handles it
                     break;
                 }

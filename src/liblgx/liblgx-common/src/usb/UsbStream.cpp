@@ -272,10 +272,19 @@ namespace libusb {
         sendI2cRead(0x20, 0x8A, lcfBytes, 2);
         uint16_t lineCount = ((lcfBytes[0] & 0x07) << 8) | lcfBytes[1];
 
-        printf("[ADV7604] TMDS Lock: %s | Cable: %s | Active: %ux%u | STDI Lines: %u | VID_STD: 0x%02X\n",
-               tmdsLocked ? "YES" : "NO",
-               cableDetected ? "YES" : "NO",
-               activeWidth, activeHeight, lineCount, vidStd);
+        static uint16_t lastW = 0, lastH = 0;
+        static uint8_t lastStd = 0xFF;
+        static bool lastLock = false;
+        if (tmdsLocked != lastLock || activeWidth != lastW || activeHeight != lastH || vidStd != lastStd) {
+            printf("[ADV7604] TMDS Lock: %s | Cable: %s | Active: %ux%u | STDI Lines: %u | VID_STD: 0x%02X\n",
+                   tmdsLocked ? "YES" : "NO",
+                   cableDetected ? "YES" : "NO",
+                   activeWidth, activeHeight, lineCount, vidStd);
+            lastLock = tmdsLocked;
+            lastW = activeWidth;
+            lastH = activeHeight;
+            lastStd = vidStd;
+        }
 
         // Auto-reprogram VID_STD if input resolution does not match current setting
         if (tmdsLocked) {
@@ -285,6 +294,9 @@ namespace libusb {
             } else if (activeWidth == 1920 && activeHeight == 1080 && vidStd != 0x06) {
                 printf("[ADV7604] Auto-reprogramming VID_STD to 0x06 for 1080p60\n");
                 setVideoStandard(0x06);
+            } else if (activeWidth == 720 && activeHeight == 576 && vidStd != 0x0B) {
+                printf("[ADV7604] Auto-reprogramming VID_STD to 0x0B for 576p50\n");
+                setVideoStandard(0x0B);
             } else if (activeWidth == 720 && activeHeight == 480 && vidStd != 0x0A) {
                 printf("[ADV7604] Auto-reprogramming VID_STD to 0x0A for 480p60\n");
                 setVideoStandard(0x0A);

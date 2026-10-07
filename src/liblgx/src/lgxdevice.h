@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <chrono>
+#include <vector>
 #include "FrameBuilder.h"
 
 namespace lgx2 {
@@ -170,6 +171,10 @@ namespace lgx2 {
         uint32_t _maxVideoFrameSize{0};
         uint32_t _minVideoFrameSize{UINT32_MAX};
         std::chrono::steady_clock::time_point _fpsTimestamp{};
+        std::chrono::steady_clock::time_point _lastSignalCheck{};
+
+        uint8_t _currentFieldFlags{0};
+        std::vector<uint32_t> _interlacedBuffer;
 
         void onFrameData(uint8_t *data, uint32_t byteLength);
 

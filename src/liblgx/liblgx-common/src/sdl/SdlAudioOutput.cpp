@@ -24,6 +24,14 @@ namespace sdl {
 
     void SdlAudioOutput::audioFrameAvailable(uint32_t *audio, uint32_t byteLength) {
         if (byteLength == 0 || audio == nullptr || !_stream) return;
+
+        // Prevent audio latency and desync build-up during lag spikes:
+        // 48 kHz stereo 16-bit = 192 bytes/ms. 60 ms = 11,520 bytes.
+        int queued = SDL_GetAudioStreamQueued(_stream);
+        if (queued > 12000) {
+            SDL_ClearAudioStream(_stream);
+        }
+
         SDL_PutAudioStreamData(_stream, audio, static_cast<int>(byteLength));
     }
 

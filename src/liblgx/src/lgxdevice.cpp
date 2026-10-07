@@ -249,6 +249,13 @@ namespace lgx2 {
                             _validFrames++;
                         }
                     } else if (frameWords > 0) {
+                        static uint32_t lastPrintWords = 0;
+                        static uint32_t lastPrintCount = 0;
+                        if (frameWords != lastPrintWords || ++lastPrintCount % 60 == 0) {
+                            printf("[Video] Unmatched frameWords: %u (expected 1080p: ~1036800, 720p: ~460800)\n", frameWords);
+                            fflush(stdout);
+                            lastPrintWords = frameWords;
+                        }
                         _droppedFrames++;
                         _consecutiveValidFrames = 0;
                     }

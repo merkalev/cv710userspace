@@ -18,6 +18,8 @@ CMakeFiles/
 *.log
 *.bin
 *.idx
+*.pcap*
+*.raw
 *.core
 core*
 *.ppm

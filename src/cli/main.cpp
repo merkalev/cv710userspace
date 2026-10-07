@@ -73,6 +73,16 @@ int main(int argc, char **argv) {
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                     do_exit = true;
+                } else if (event.type == SDL_EVENT_KEY_DOWN) {
+                    if (event.key.key == SDLK_P) {
+                        device.queryVideoSignalStatus();
+                    } else if (event.key.key == SDLK_7) {
+                        device.setVideoStandard(0x13); // 720p60
+                    } else if (event.key.key == SDLK_1) {
+                        device.setVideoStandard(0x06); // 1080p60
+                    } else if (event.key.key == SDLK_4) {
+                        device.setVideoStandard(0x0A); // 480p60
+                    }
                 }
             }
             device.run();

@@ -229,6 +229,62 @@ namespace libusb {
         fflush(stdout);
     }
 
+    int UsbStream::sendI2cRead(uint8_t slave7Bit, uint8_t reg, uint8_t *data, uint8_t len) {
+        if (!_dev) return -1;
+        uint8_t cmd[5];
+        cmd[0] = 0x02; // I2C read command
+        cmd[1] = slave7Bit;
+        cmd[2] = 0x01; // 1-byte register address length
+        cmd[3] = len;  // bytes to read
+        cmd[4] = reg;
+        int actual = 0;
+        int rc = libusb_bulk_transfer(_dev, LIBUSB_ENDPOINT_OUT | 0x01, cmd, sizeof(cmd), &actual, 500);
+        if (rc != 0 || actual != sizeof(cmd)) return -1;
+        rc = libusb_bulk_transfer(_dev, LIBUSB_ENDPOINT_IN | 0x01, data, len, &actual, 500);
+        if (rc != 0) return -1;
+        return actual;
+    }
+
+    void UsbStream::queryVideoSignalStatus() {
+        if (!_dev) return;
+
+        // ADV7604 HDMI map is 0x34 (0x68 >> 1)
+        uint8_t tmdsStat = 0;
+        uint8_t hdmiMode = 0;
+        uint8_t widthBytes[2] = {0, 0};
+        uint8_t heightBytes[2] = {0, 0};
+
+        sendI2cRead(0x34, 0x04, &tmdsStat, 1);
+        sendI2cRead(0x34, 0x05, &hdmiMode, 1);
+        sendI2cRead(0x34, 0x07, widthBytes, 2);
+        sendI2cRead(0x34, 0x09, heightBytes, 2);
+
+        uint16_t activeWidth = ((widthBytes[0] & 0x1F) << 8) | widthBytes[1];
+        uint16_t activeHeight = ((heightBytes[0] & 0x1F) << 8) | heightBytes[1];
+        bool tmdsLocked = (tmdsStat & 0x02) != 0;
+        bool cableDetected = (tmdsStat & 0x40) != 0;
+
+        // ADV7604 IO map is 0x20
+        uint8_t vidStd = 0;
+        uint8_t lcfBytes[2] = {0, 0};
+        sendI2cRead(0x20, 0x01, &vidStd, 1);
+        sendI2cRead(0x20, 0x8A, lcfBytes, 2);
+        uint16_t lineCount = ((lcfBytes[0] & 0x07) << 8) | lcfBytes[1];
+
+        printf("[ADV7604] TMDS Lock: %s | Cable: %s | Active: %ux%u | STDI Lines: %u | VID_STD: 0x%02X\n",
+               tmdsLocked ? "YES" : "NO",
+               cableDetected ? "YES" : "NO",
+               activeWidth, activeHeight, lineCount, vidStd);
+        fflush(stdout);
+    }
+
+    void UsbStream::setVideoStandard(uint8_t std) {
+        if (!_dev) return;
+        printf("[ADV7604] Reprogramming VID_STD -> 0x%02X\n", std);
+        sendI2cWrite(0x20, 0x01, std);
+        fflush(stdout);
+    }
+
     void UsbStream::queueFrameRead(std::function<void(uint8_t *, uint32_t)> *onData) {
         _onFrameDataCallback = onData;
 

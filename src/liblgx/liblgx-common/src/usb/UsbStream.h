@@ -37,7 +37,10 @@ namespace libusb {
         void queueAllFrameReads();
 
         void setVideoInput(lgx2::VideoInputSource source) override;
+        void queryVideoSignalStatus() override;
+        void setVideoStandard(uint8_t std) override;
         bool sendI2cWrite(uint8_t slave7Bit, uint8_t reg, uint8_t val);
+        int sendI2cRead(uint8_t slave7Bit, uint8_t reg, uint8_t *data, uint8_t len);
 
     private:
         static constexpr int MAX_QUEUE_DEPTH = 128;

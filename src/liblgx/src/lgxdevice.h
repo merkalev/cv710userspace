@@ -48,6 +48,8 @@ namespace lgx2 {
         virtual void shutdownStream() = 0;
 
         virtual void setVideoInput(VideoInputSource source) { (void)source; }
+        virtual void queryVideoSignalStatus() {}
+        virtual void setVideoStandard(uint8_t std) { (void)std; }
     };
 
     enum class VideoScale {
@@ -109,6 +111,16 @@ namespace lgx2 {
         void setVideoInput(VideoInputSource source) {
             if (_stream) {
                 _stream->setVideoInput(source);
+            }
+        }
+        void queryVideoSignalStatus() {
+            if (_stream) {
+                _stream->queryVideoSignalStatus();
+            }
+        }
+        void setVideoStandard(uint8_t std) {
+            if (_stream) {
+                _stream->setVideoStandard(std);
             }
         }
 

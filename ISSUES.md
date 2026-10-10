@@ -601,11 +601,19 @@ Credit: This work builds upon the pioneering research and userspace driver found
   (`frameWords == strideWords * fieldLines`).
 - **Automatic software replug.** After 60 consecutive un-presentable frames
   while the ADV7604 reports a *locked* geometry (≈1 s), the parser runs
-  `reassertStream()`: it resets the FX3 stream DMA (clears the FPGA FIFO
-  pointers), re-asserts the FPGA streaming bit (the exact sequence used when
-  streaming starts), and re-enters the C0 lock hunt — a replug without touching
-  the cable.
+  `reassertStream()`: it toggles the FPGA stream-enable bit off and on (the same
+  registers the shutdown/start paths use) and re-enters the C0 lock hunt — a
+  replug without touching the cable.
 - **Manual re-sync key.** `R` runs the same software replug on demand.
+- **CV-23a: no FX3 DMA reset mid-stream.** The first field test of the replug
+  showed that `sendResetStreamDma()` (the FX3 `0x14` command) issued while the
+  stream is *live* kills the whole EP1 control path: ADV7604 I2C status reads
+  immediately start failing (`Status query failed … keeping last known good
+  values`), no new frames ever present, and the app sits on the standby "NO
+  SIGNAL" BMP until restarted. The `0x14` DMA reset is therefore used only at
+  stream start (where it is proven safe); a re-sync re-arms the FPGA with the
+  stream-enable toggle instead, which is a plain I2C transaction that cannot
+  disrupt the control path.
 - `Device::reassertStream()` also resets weave/parity audio mute state so the
   next lock starts clean; the ADV7604 register config and EDID are deliberately
   left untouched (CV-15 state-preserving design).
@@ -618,3 +626,10 @@ Credit: This work builds upon the pioneering research and userspace driver found
   - 60 consecutive corrupt frames with a locked receiver fire the software
     replug exactly once, the streak resets, and a clean frame presents
     afterwards. 83 assertions across 2 cases, all passing.
+- **Field test of the as-shipped CV-23 replug (2026-10-10).** Pressing `R` while
+  streaming produced, in order: `Capture pipeline re-asserted`, USB backlog
+  warnings, one C0 lock after a long hunt, then `ADV7604 Status query failed
+  (…, N consecutive)` climbing — and no further `produceVideoData` ever logged.
+  This pinned the breakage on `sendResetStreamDma()` being issued mid-stream and
+  led to CV-23a above. Re-validation needed on hardware with the toggle-only
+  re-sync.

@@ -68,10 +68,11 @@ The application will initialize the hardware and stream 1080p60 uncompressed vid
 - `C`: Cycle colorspace profiles (BT.709 limited, BT.709 full range, BT.601, UYVY, raw YUY2).
 - `F`: Toggle fullscreen.
 - `G`: Exit fullscreen.
-- `R`: Re-sync the capture pipeline (software replug: resets the FX3 stream
-  DMA and re-asserts the FPGA stream). Use it if the picture ever gets skewed /
-  misaligned lines and stays that way - no need to unplug the cable. The parser
-  also performs this automatically after ~1 s of continuously corrupt frames.
+- `R`: Re-sync the capture pipeline (software replug: toggles the FPGA stream
+  bit and re-anchors the parser on the next frame marker). Use it if the picture
+  ever gets skewed / misaligned lines and stays that way - no need to unplug the
+  cable. The parser also performs this automatically after ~1 s of continuously
+  corrupt frames.
 - `Esc`: Quit application.
 
 Resolution and colour changes briefly show a small bottom-centre **toast**; the full HUD is only shown when you ask for it with `Tab`/`O`.

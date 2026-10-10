@@ -687,9 +687,13 @@ namespace lgx2 {
     void Device::reassertStream() {
         _autoResyncCount++;
         if (_stream) {
-            // Mimic a replug in software: reset the FX3 stream DMA (clears its
-            // internal FIFO pointers) and re-assert the FPGA streaming-enable
-            // bit - the exact sequence queueFrameRead uses when streaming starts.
+            // CV-23a: software replug = toggle the FPGA stream-enable bit off/on
+            // (the registers shutdownStream/queueFrameRead already use) rather than
+            // the FX3 DMA reset (0x14). The 0x14 command is only safe at stream
+            // start: issued mid-stream it kills the EP1 control path - ADV7604 I2C
+            // status reads fail and bulk streaming never resumes, leaving the app
+            // stuck on the standby BMP. The FPGA toggle re-arms frame generation
+            // with no risk to the control path.
             _stream->resetStreamPipeline();
         }
 

@@ -4,7 +4,8 @@
 // construction - a single word lost/duplicated mid-frame shifts every
 // following scanline by 1 word (2 px). The parser must DROP such frames
 // instead of padding/presenting them, and must automatically perform a
-// software replug (resetStreamPipeline -> FX3 DMA reset + FPGA re-assert)
+// software replug (resetStreamPipeline -> FPGA stream-enable toggle; the
+// FX3 DMA reset is deliberately NOT used mid-stream, see CV-23a)
 // when a persistent corrupt streak builds up while the receiver is locked.
 
 #include "catch_amalgamated.hpp"

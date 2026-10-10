@@ -436,11 +436,13 @@ Credit: This work builds upon the pioneering research and userspace driver found
   with known geometry (`valid && locked && activeWidth > 0`) for a short settle period
   (~200 ms). Transitional/free-run frames are masked behind it.
 - A 3 s safety valve shows the preview anyway if the status channel never validates, so
-  the screen can never be permanently stuck.
+  the screen can never be permanently stuck. It deliberately **does not** fire when a
+  valid status says "unlocked": the CV710 keeps emitting free-run frames after the source
+  is switched off, and an earlier version of this valve kept showing that frozen/free-run
+  picture instead of returning to the standby image.
 - The first live frame is cross-faded in (CV-18b) instead of popping.
-- The standby text is state-aware: "Initializing capture" (no status yet), "No HDMI
-  signal" (unlocked), "HDMI locked" (waiting for the first frame). The blue procedural
-  fallback was replaced with a neutral dark card.
+- The standby screen is just the AVerMedia bitmap; no textual status states are
+  overlaid (the BMP is enough). The blue procedural fallback was removed entirely.
 - `Device::run()` now publishes the cached signal snapshot every 200 ms instead of
   1000 ms so the gate and HUD react quickly (the snapshot copy is cheap; the actual I2C
   polling still runs on the control thread).

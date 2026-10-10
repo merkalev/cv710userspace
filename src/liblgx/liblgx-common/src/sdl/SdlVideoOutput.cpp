@@ -577,9 +577,14 @@ namespace sdl {
             (now - _signalReadySince) >= std::chrono::milliseconds(200);
 
         // Safety valve: if the status channel never validates but frames keep
-        // arriving, never hide the preview permanently.
+        // arriving, never hide the preview permanently. It must NOT fire when the
+        // receiver has a valid status that says "unlocked" - the CV710 keeps
+        // emitting free-run frames after the source goes away, and those must be
+        // masked by the standby screen (regression fixed: previously this valve
+        // kept showing the frozen/free-run picture when the TV box was switched
+        // off).
         bool forceShow = false;
-        if (!settled && _hasSignal &&
+        if (!settled && !si.valid && _hasSignal &&
             _firstFrameTime != std::chrono::steady_clock::time_point{} &&
             (now - _firstFrameTime) > std::chrono::seconds(3)) {
             forceShow = true;
@@ -801,85 +806,25 @@ namespace sdl {
         SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL_RenderClear(_renderer);
 
-        // CV-18: distinguish "we have not read the receiver status yet" from a
-        // genuine loss of signal. Showing "[ NO SIGNAL ]" during the ~half second
-        // while the FPGA bootstraps is misleading and was the main startup
-        // complaint.
-        const lgx2::VideoSignalInfo &si = _metrics.signalInfo;
-        const char *heading;
-        const char *detail;
-        uint8_t hr, hg, hb;
-        if (!si.valid) {
-            heading = "Initializing capture";
-            detail  = "Preparing the CV710 HDMI receiver...";
-            hr = 120; hg = 200; hb = 230;      // cool cyan
-        } else if (!si.locked) {
-            heading = "No HDMI signal";
-            detail  = "Connect a source to the receiver's HDMI input.";
-            hr = 230; hg = 170; hb = 90;       // amber
-        } else {
-            heading = "HDMI locked";
-            detail  = "Waiting for the first complete video frame...";
-            hr = 120; hg = 210; hb = 150;       // green
-        }
-
-        // Animated activity indicator so the screen never looks frozen.
-        const int dots = static_cast<int>(
-            (std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count() / 400) % 4);
-
+        // The AVerMedia standby bitmap is the whole standby screen; no textual
+        // status states are overlaid. The same image is shown while initialising,
+        // while unlocked and while waiting for the first frame.
         if (_splashTexture) {
-            // Keep the neutral AVerMedia standby image, centred at native size,
-            // with a clean status caption underneath.
             const float splashW = 640.0f;
             const float splashH = 480.0f;
-            float dstX = (static_cast<float>(winW) - splashW) / 2.0f;
-            float dstY = (static_cast<float>(winH) - splashH) / 2.0f - 24.0f;
+            const float dstX = (static_cast<float>(winW) - splashW) / 2.0f;
+            const float dstY = (static_cast<float>(winH) - splashH) / 2.0f;
             SDL_FRect dstRect{dstX, dstY, splashW, splashH};
             SDL_RenderTexture(_renderer, _splashTexture, nullptr, &dstRect);
-
-            SDL_SetRenderDrawColor(_renderer, hr, hg, hb, 255);
-            SDL_SetRenderScale(_renderer, 2.0f, 2.0f);
-            SDL_RenderDebugText(_renderer, (static_cast<float>(winW) / 2.0f - 90.0f) / 2.0f,
-                                (dstY + splashH + 20.0f) / 2.0f, heading);
-            SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
         } else {
-            // Neutral procedural standby card (replaces the old saturated-blue
-            // fallback that produced the "blue flash").
-            const float cardW = 720.0f;
-            const float cardH = 300.0f;
-            const float cardX = (static_cast<float>(winW) - cardW) / 2.0f;
-            const float cardY = (static_cast<float>(winH) - cardH) / 2.0f;
-
-            SDL_FRect cardRect{cardX, cardY, cardW, cardH};
-            SDL_SetRenderDrawColor(_renderer, 16, 20, 28, 255);
-            SDL_RenderFillRect(_renderer, &cardRect);
-
-            SDL_SetRenderDrawColor(_renderer, 44, 56, 74, 255);
-            SDL_RenderRect(_renderer, &cardRect);
-
-            // Thin, muted accent rule across the top of the card.
-            SDL_FRect barRect{cardX, cardY, cardW, 3.0f};
-            SDL_SetRenderDrawColor(_renderer, 60, 140, 150, 255);
-            SDL_RenderFillRect(_renderer, &barRect);
-
+            // Minimal fallback when the asset is missing: device name on black,
+            // no status text.
             SDL_SetRenderScale(_renderer, 2.0f, 2.0f);
-            SDL_SetRenderDrawColor(_renderer, 210, 220, 232, 255);
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 2.0f, (cardY + 30.0f) / 2.0f,
+            SDL_SetRenderDrawColor(_renderer, 200, 208, 220, 255);
+            SDL_RenderDebugText(_renderer,
+                                (static_cast<float>(winW) / 2.0f - 120.0f) / 2.0f,
+                                (static_cast<float>(winH) / 2.0f) / 2.0f,
                                 "AVerMedia ExtremeCap U3 (CV710)");
-
-            SDL_SetRenderScale(_renderer, 3.0f, 3.0f);
-            SDL_SetRenderDrawColor(_renderer, hr, hg, hb, 255);
-            char headingBuf[64];
-            snprintf(headingBuf, sizeof(headingBuf), "%s%.*s", heading, dots, "...");
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 3.0f, (cardY + 100.0f) / 3.0f, headingBuf);
-
-            SDL_SetRenderScale(_renderer, 1.5f, 1.5f);
-            SDL_SetRenderDrawColor(_renderer, 150, 164, 182, 255);
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 190.0f) / 1.5f, detail);
-            SDL_SetRenderDrawColor(_renderer, 105, 120, 140, 255);
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 220.0f) / 1.5f,
-                                "Audio is muted until video sync locks.");
         }
 
         SDL_SetRenderScale(_renderer, 1.0f, 1.0f);

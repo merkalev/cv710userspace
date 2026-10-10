@@ -64,10 +64,13 @@ Once udev has been configured, run the application:
 The application will initialize the hardware and stream 1080p60 uncompressed video and audio to an SDL3 preview window.
 
 ### Options when running
+- `Tab` / `O`: Toggle the persistent diagnostic HUD (rounded "glass" card: input, colour, audio and capture status).
 - `C`: Cycle colorspace profiles (BT.709 limited, BT.709 full range, BT.601, UYVY, raw YUY2).
 - `F`: Toggle fullscreen.
 - `G`: Exit fullscreen.
 - `Esc`: Quit application.
+
+Resolution and colour changes briefly show a small bottom-centre **toast**; the full HUD is only shown when you ask for it with `Tab`/`O`.
 
 Command-line flags:
 * `-c COLOR`: Set initial colorspace (`bt709`, `bt709full`, `bt601`, `bt601full`, `uyvy`, `yuy2`).

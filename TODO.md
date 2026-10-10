@@ -4,24 +4,24 @@
 - [ ] **ADV7604 STDI (Standard Identification) Register Polling**:
   - Implement I2C queries to ADV7604 IO map (`0x20`) registers `0x88` - `0x8E` to read incoming line count and frame rate.
   - Dynamically switch `VID_STD` (e.g., `0x13` for 720p60, `0x0A` for 480p60) when input format changes from 1080p.
-- [ ] **Multi-Resolution EDID Generation**:
-  - Expand the 256-byte EDID table in `UsbStream.cpp` (`0x6C` RAM) to advertise standard CEA-861 timings for 720p, 576p, and 480p so source devices do not force 1080p output.
+- [ ] **Multi-Resolution EDID Generation** — **Won't do (by design)**:
+  - The captured bootstrap/EDID bytes in `UsbStream.cpp` (`0x6C` RAM) must remain exactly as captured. Advertising extra CEA-861 timings would change device behaviour and is out of scope. Sub-1080p support, if needed, is handled purely at the display/V4L2 layer from the receiver-reported geometry.
 - [ ] **Frame Size Calibration for Sub-1080p**:
-  - Verify exact word count outputs for 720p (`460,800` words), 576p (`207,360` words), and 480p (`172,800` words) under locked STDI timing.
+  - Verify exact word count outputs for 720p (`460,800` words), 576p (`207,360` words), and 480p (`172,800` words) under locked STDI timing. Requires a sub-1080p source on the bench.
 
 ---
 
 ## Performance and Pipeline Enhancements (Feasible Implementations)
-- [ ] **GPU-Accelerated Zero-Copy Shaders**:
-  - Upload raw YUY2 macropixels directly as an `RG88` or YUV texture to the GPU.
-  - Perform Rec.709/Rec.601 color matrix conversion inside an SDL3 / OpenGL / Vulkan fragment shader, dropping CPU usage to near 0%.
-- [ ] **SIMD AVX2 and NEON Intrinsics**:
-  - Implement vectorized YUY2 to RGBA conversion using `_mm256_*` (x86_64) and NEON (ARM64) for headless V4L2 streaming.
+- [~] **GPU-Accelerated Zero-Copy Shaders** — **shipped as an opt-in mode**:
+  - The `Direct_YUY2` colorspace mode already uploads raw YUY2 macropixels as an `SDL_PIXELFORMAT_YUY2` texture and lets SDL/the GPU do the YUV→RGB conversion (near-zero CPU). Select it via `-c yuy2` / `--colorspace yuy2`. It is not the default because the GPU path uses standard chroma reconstruction and cannot replicate the CV-09 co-sited reconstruction used by the CPU path.
+- [x] **SIMD AVX2 Intrinsics**: `convertYuy2ToRgba` now has a runtime-dispatched AVX2 row converter (8 macropixels/iteration, `_mm256_*`) that is bit-for-bit identical to the scalar path (including CV-09). NEON for ARM64 remains open.
+
 - [x] **Dynamic V4L2 Loopback Format Re-negotiation**: `V4LFrameOutput` now renegotiates `VIDIOC_S_FMT` when the incoming geometry changes and only writes on new frames (CV-17). A consumer holding a fixed format is detected and mismatched frames are dropped instead of corrupting the stream.
-- [x] **Virtual Audio Loopback Output**: `--audio-device <name|index>` and `--audio-loopback` route captured audio to any SDL playback device, including an `snd-aloop`/PipeWire virtual sink, so it can be captured without desktop playback (CV-19). `--list-audio-devices` enumerates options. V4L2 output auto-prefers a loopback sink when one is present.- [ ] **Aspect Ratio Preservation for SD Sources**:
+- [x] **Virtual Audio Loopback Output**: `--audio-device <name|index>` and `--audio-loopback` route captured audio to any SDL playback device, including an `snd-aloop`/PipeWire virtual sink, so it can be captured without desktop playback (CV-19). `--list-audio-devices` enumerates options. V4L2 output auto-prefers a loopback sink when one is present.
+- [ ] **Aspect Ratio Preservation for SD Sources**:
   - Add configurable aspect ratio handling (`16:9` vs `4:3` pillarboxing) for 480p and 576p video.
-- [ ] **HDCP Detection and Status Notification**:
-  - Query ADV7604 HDMI map `0x68` register `0x05` bit 7 to detect encrypted input and display an OSD warning instead of a silent black screen.
+- [ ] **HDCP Detection and Status Notification** — **Won't do (by design)**:
+  - Intentionally out of scope. The device is used on unencrypted HDMI only, and no HDCP interrogation/notice is to be implemented.
 
 ---
 
@@ -40,5 +40,7 @@
 - [x] Resolved audio stuttering and pops by eliminating destructive playback buffer clears on video frame drops.
 - [x] Eliminated 720p false-classification oscillation loop and texture allocation crash by applying narrow tolerance bands and 5-frame hysteresis.
 - [x] Expanded USB queue depth to 128 transfers (~256 MB buffer) and pipeline depth to 16.
-- [x] Renovated HUD OSD with translucent card, native 1:1 fonts, color-coded presets, and smooth alpha fade.
+- [x] Renovated HUD OSD into a rounded "glass" card (accent top-line + dot, coloured status pill, aligned `LABEL value` rows) with hotkey hint.
+- [x] Split the transient mode/resolution notification out of the diagnostic card into a small rounded bottom-centre toast with its own fade.
+- [x] AVX2-accelerated YUY2→RGBA conversion (`_mm256_*`, runtime dispatch, bit-exact vs scalar incl. CV-09).
 - [x] Clean CMake build system with portable asset discovery and zero hardcoded paths.

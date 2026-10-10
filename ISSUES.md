@@ -121,6 +121,9 @@ Credit: This work builds upon the pioneering research and userspace driver found
 - The ADV7604 hardware digitizes the incoming HDMI stream and sends raw frames to the FX3 bulk endpoint.
 - This behavior is intended and verified functional.
 
+### Status
+- **Intentionally out of scope.** No HDCP interrogation, no register polling for encryption status, and no HDCP OSD notice is to be implemented. Unencrypted HDMI only.
+
 ---
 
 ## 7. Address Boundary Crashes (SIGSEGV) at No Signal and Input Switches (RESOLVED)
@@ -485,5 +488,45 @@ Credit: This work builds upon the pioneering research and userspace driver found
   `snd-aloop` / PipeWire virtual sink, so third-party software can capture it.
 - When `-d` (V4L2) is used, a loopback sink is auto-preferred if one is present, falling
   back to the desktop default otherwise.
+
+---
+
+## 19. OSD/HUD Renovation (CV-20)
+
+### Previous look
+- A single flat rectangle with the SDL 8x8 debug font, a bracketed `[ TMDS LOCK ]`
+  badge, colon-prefixed rows (`Video:`, `Color:` …), and a dense hotkey line.
+- Every transient event (resolution detect, auto/manual colorspace change, HUD toggle)
+  popped up the *entire* diagnostic card for 2.5 s, which read as visual noise.
+
+### Now
+- The persistent diagnostic HUD (Tab/O) is a rounded "glass" card at 2x scale: accent
+  glow line + dot, a filled coloured status pill (`LOCKED` / `NO SIGNAL` / `LIVE`),
+  a divider, aligned dim `LABEL` + bright value rows, and a compact hotkey hint.
+- Transient events now show a small rounded **toast** pill at the bottom-centre
+  (accent dot + message) with its own fade, instead of the full card.
+- Implemented with only SDL primitives (no SDL_ttf dependency): `fillRoundRect()`
+  draws rounded rectangles from horizontal spans so they composite correctly.
+
+---
+
+## 20. YUY2→RGBA CPU Conversion Cost (CV-21)
+
+### Change
+- Added a runtime-dispatched AVX2 row converter (`convertRowAvx2`, `_mm256_*`,
+  8 macropixels per iteration) used for full-scale (`step == 1`) non-swapped chroma.
+- It is **bit-for-bit identical** to the scalar path, including the CV-09 co-sited
+  chroma reconstruction (the odd luma pixel uses the average of the current and the
+  next macropixel's chroma).
+- Guarded by `__builtin_cpu_supports("avx2")`; all other cases (downscale, UYVY swap,
+  non-x86) fall back to the existing scalar loop. The existing multi-threaded row
+  split is retained on top.
+
+### Verification
+- A standalone harness compared AVX2 against the exact production scalar for all four
+  BT.709/601 limited/full matrices, across row widths both divisible by 8 (vector-only)
+  and not (exercising the scalar tail): **bit-exact**. Single-row throughput improved
+  ~1.6x in isolation.
+
 
 

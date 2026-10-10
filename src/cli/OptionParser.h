@@ -24,6 +24,9 @@ namespace app {
         const std::string &audioDevice() const { return _audioDevice; }
         bool audioLoopback() const { return _audioLoopback; }
         bool v4l2Output() const { return _v4l2Output; }
+        // CV-26: -v / -V select the ChronoLogger, which also gates the throttled
+        // per-frame console chatter in lgx2::Device.
+        bool verbose() const { return _logger != nullptr; }
 
     private:
         lgx2::VideoOutput *_videoOutput{nullptr};

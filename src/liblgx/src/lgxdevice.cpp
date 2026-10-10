@@ -179,9 +179,11 @@ namespace lgx2 {
         }
 
         uint32_t i = 0;
-        if (++_transferCount <= 5 || (_transferCount % 60) == 0) {
-            printf("[Debug] onFrameData transfer #%u (%u bytes)\n", _transferCount, byteLength);
-            fflush(stdout);
+        if (_verbose) {
+            if (++_transferCount <= 5 || (_transferCount % 60) == 0) {
+                printf("[Debug] onFrameData transfer #%u (%u bytes)\n", _transferCount, byteLength);
+                fflush(stdout);
+            }
         }
 
         // 1. Drain audio continuation if transfer boundary straddled audio payload
@@ -220,10 +222,12 @@ namespace lgx2 {
                     uint8_t b2 = (meta >> 16) & 0xFF;
                     uint8_t b3 = (meta >> 24) & 0xFF;
                     uint8_t chk = (b0 + b1 + b2 - 0x40) & 0xFF;
-                    if (++_c0HuntCount <= 10) {
-                        printf("[Debug] C0 candidate #%u at word %u: meta=0x%08x [b3=%02x, b2=%02x, b1=%02x, b0=%02x, chk=%02x, b1==1:%d, chk==b3:%d]\n",
-                               _c0HuntCount, i, meta, b3, b2, b1, b0, chk, (b1 == 0x01), (chk == b3));
-                        fflush(stdout);
+                    if (_verbose) {
+                        if (++_c0HuntCount <= 10) {
+                            printf("[Debug] C0 candidate #%u at word %u: meta=0x%08x [b3=%02x, b2=%02x, b1=%02x, b0=%02x, chk=%02x, b1==1:%d, chk==b3:%d]\n",
+                                   _c0HuntCount, i, meta, b3, b2, b1, b0, chk, (b1 == 0x01), (chk == b3));
+                            fflush(stdout);
+                        }
                     }
                     if (b1 == 0x01 && (chk == b3)) {
                         _streamLocked = true;
@@ -238,8 +242,10 @@ namespace lgx2 {
                         _inAudioPadding = false;
                         _inVideo = true;
                         _fieldsWoven = 0;
-                        printf("[Debug] STREAM LOCKED to C0 at word %u, seq=0x%02x\n", i, b0);
-                        fflush(stdout);
+                        if (_verbose) {
+                            printf("[Debug] STREAM LOCKED to C0 at word %u, seq=0x%02x\n", i, b0);
+                            fflush(stdout);
+                        }
                         i += 2;
                         break;
                     }
@@ -652,10 +658,12 @@ namespace lgx2 {
             _audioMuted = false;
         }
 
-        if (_validFrames <= 5 || (_validFrames % 60) == 0) {
-            printf("[Debug] produceVideoData: valid=%u, drops=%u, %ux%u (%u words)\n",
-                   _validFrames, _droppedFrames, width, height, frameSize);
-            fflush(stdout);
+        if (_verbose) {
+            if (_validFrames <= 5 || (_validFrames % 60) == 0) {
+                printf("[Debug] produceVideoData: valid=%u, drops=%u, %ux%u (%u words)\n",
+                       _validFrames, _droppedFrames, width, height, frameSize);
+                fflush(stdout);
+            }
         }
 
         _videoFrameCount++;
@@ -667,12 +675,14 @@ namespace lgx2 {
         } else if (now - _fpsTimestamp >= std::chrono::seconds(1)) {
             auto elapsed = std::chrono::duration<double>(now - _fpsTimestamp).count();
             _measuredFps = static_cast<float>(static_cast<double>(_videoFrameCount) / elapsed);
-            printf("Frames: %" PRIu64 " (%.1f fps)  drops: %u  valid: %u  size: %u uint32s\n",
-                   _videoFrameCount,
-                   _measuredFps,
-                   _droppedFrames, _validFrames,
-                   frameSize);
-            fflush(stdout);
+            if (_verbose) {
+                printf("Frames: %" PRIu64 " (%.1f fps)  drops: %u  valid: %u  size: %u uint32s\n",
+                       _videoFrameCount,
+                       _measuredFps,
+                       _droppedFrames, _validFrames,
+                       frameSize);
+                fflush(stdout);
+            }
             _videoOutput->updateMetrics({_stream->getVideoSignalInfo(), _measuredFps, _validFrames, _droppedFrames});
             _fpsTimestamp = now;
             _videoFrameCount = 0;

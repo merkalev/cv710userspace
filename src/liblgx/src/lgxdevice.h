@@ -169,6 +169,10 @@ namespace lgx2 {
         // locked signal.
         uint32_t autoResyncCount() const { return _autoResyncCount; }
         void reassertStream();
+        // CV-26: the throttled per-transfer/per-frame console chatter is off by
+        // default; -v / -V turn it on.
+        void setVerbose(bool verbose) { _verbose = verbose; }
+        bool verbose() const { return _verbose; }
 
     private:
         Stream *_stream;
@@ -176,6 +180,7 @@ namespace lgx2 {
         AudioOutput *_audioOutput;
         Logger *_logger;
         ErrorSink *_errorSink;
+        bool _verbose{false};
 
         utils::FrameBuilder _frameBuilder;
 

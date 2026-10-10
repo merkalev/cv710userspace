@@ -66,6 +66,7 @@ int main(int argc, char **argv) {
     lgx2::ErrorSink *errorSink = new error::SimpleErrorSink();
 #endif
     lgx2::Device device{stream, videoOutput, audioOutput, logger, errorSink};
+    device.setVerbose(optionParser.verbose());
 
     lgx2::DeviceType targetDevice = optionParser.deviceType();
 

@@ -63,6 +63,8 @@ Once udev has been configured, run the application:
 
 The application will initialize the hardware and stream 1080p60 uncompressed video and audio to an SDL3 preview window.
 
+The console is quiet by default: only event-driven lines print (resolution changes, lock status, drop/re-sync events, errors). The throttled per-transfer/per-frame debug chatter is off; add `-v` or `-V` to see it.
+
 ### Options when running
 - `Tab` / `O`: Toggle the persistent diagnostic HUD (rounded "glass" card: input, colour, audio and capture status).
 - `C`: Cycle colorspace profiles (BT.709 limited, BT.709 full range, BT.601, UYVY, raw YUY2).
@@ -87,8 +89,8 @@ Command-line flags:
 * `--aspect MODE`: Aspect-ratio handling for the preview window (`stretch` = fill the window, the default; `auto` = preserve each source's natural DAR, treating 480p/576p as classic 4:3 and HD as 16:9; `4:3` / `16:9` = force that DAR). Non-stretch modes pillarbox/letterbox in black instead of squashing the picture.
 * `-g`: Video only (disable audio output).
 * `-s`: Audio only (disable video preview).
-* `-v`: Print diagnostic summary at exit.
-* `-V`: Print real-time diagnostic timing.
+* `-v`: Print diagnostic summary at exit (also enables the throttled per-transfer/per-frame console chatter).
+* `-V`: Print real-time diagnostic timing (also enables the throttled per-transfer/per-frame console chatter).
 * `--audio-device NAME|INDEX`: Route captured audio to a specific playback device (substring match or list index).
 * `--audio-loopback`: Route captured audio to a virtual loopback sink so it can be captured by other software.
 * `--list-audio-devices`: List the playback devices SDL can see and exit.

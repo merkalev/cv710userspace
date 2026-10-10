@@ -569,3 +569,52 @@ Credit: This work builds upon the pioneering research and userspace driver found
 
 
 
+
+---
+
+## 22. Skewed / Misaligned Lines — Sometimes Persistent Until a Replug (CV-23 — FIXED)
+
+### Symptom
+- Occasionally the picture develops "skewed / misaligned lines" (rows shifted by
+  a few pixels, content duplicated at the right edge). Usually brief around a
+  resolution switch, but **sometimes it sticks and only a physical replug of the
+  capture device clears it**.
+
+### Root Cause
+1. **Wrong-size frames were padded and presented.** A single word lost or
+   duplicated mid-frame (USB hiccup, corrupt read) shifts every following
+   scanline by 1 word (2 px). The frame total stays within the ±2 % mode band,
+   the markers stay valid, and the old code padded/truncated it and presented it
+   — the row-stride "skewed lines" seam. It self-heals only when the *next*
+   frame happens to be clean, so while the transport keeps hiccuping the picture
+   keeps looking skewed.
+2. **Nothing ever re-locked a stuck pipeline.** `_streamLocked` was set once and
+   never cleared, so once the FPGA/FX3 FIFO alignment or the parser state got
+   stuck (the only-replug-clears case), no code path could recover.
+
+### Resolution (CV-23)
+- **Exact-size gate at presentation.** A frame/field whose word count differs
+  from the locked geometry is now dropped (counted, rate-limited log) instead of
+  padded/truncated and presented. A skipped frame is invisible next to a skewed
+  one, and the next genuine C0 re-anchors the raster. Applies to progressive
+  frames (`frameWords == mode.targetWords`) and interlaced fields
+  (`frameWords == strideWords * fieldLines`).
+- **Automatic software replug.** After 60 consecutive un-presentable frames
+  while the ADV7604 reports a *locked* geometry (≈1 s), the parser runs
+  `reassertStream()`: it resets the FX3 stream DMA (clears the FPGA FIFO
+  pointers), re-asserts the FPGA streaming bit (the exact sequence used when
+  streaming starts), and re-enters the C0 lock hunt — a replug without touching
+  the cable.
+- **Manual re-sync key.** `R` runs the same software replug on demand.
+- `Device::reassertStream()` also resets weave/parity audio mute state so the
+  next lock starts clean; the ADV7604 register config and EDID are deliberately
+  left untouched (CV-15 state-preserving design).
+
+### Verification
+- New `device_parser_test` (Catch2) feeds synthetic 1080p frames through
+  `Device::onFrameData`:
+  - exact-size frame presented, off-by-one frame dropped (never presented),
+    next clean frame presented again;
+  - 60 consecutive corrupt frames with a locked receiver fire the software
+    replug exactly once, the streak resets, and a clean frame presents
+    afterwards. 83 assertions across 2 cases, all passing.

@@ -48,3 +48,8 @@ add_executable(framebuilder_test test/FrameBuilder.t.cpp test/catch_amalgamated.
 target_include_directories(framebuilder_test PRIVATE src)
 target_link_libraries(framebuilder_test PRIVATE liblgx)
 add_test(framebuilder_test framebuilder_test)
+
+add_executable(device_parser_test test/DeviceParser.t.cpp test/catch_amalgamated.cpp test/catch_amalgamated.hpp)
+target_include_directories(device_parser_test PRIVATE src)
+target_link_libraries(device_parser_test PRIVATE liblgx)
+add_test(device_parser_test device_parser_test)

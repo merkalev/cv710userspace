@@ -94,6 +94,8 @@ int main(int argc, char **argv) {
                         device.setVideoStandard(0x06); // 1080p60
                     } else if (event.key.key == SDLK_4) {
                         device.setVideoStandard(0x0A); // 480p60
+                    } else if (event.key.key == SDLK_R) {
+                        device.reassertStream();
                     }
                 }
             }

@@ -884,7 +884,7 @@ namespace sdl {
                  _metrics.liveFps, _metrics.validFrames, _metrics.droppedFrames);
 
         static const char *kTitle = "AVerMedia CV710";
-        static const char *kHint = "Tab HUD   C Color   F/G Full";
+        static const char *kHint = "Tab HUD   C Color   F/G Full   R Re-sync";
         static const char *kLabels[4] = {"INPUT", "COLOR", "AUDIO", "CAPTURE"};
         const char *kValues[4] = {inBuf, colBuf, audBuf, capBuf};
 

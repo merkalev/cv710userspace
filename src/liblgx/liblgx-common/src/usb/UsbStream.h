@@ -39,6 +39,10 @@ namespace libusb {
         void setFastBootstrap(bool fast) override { _fastBootstrap = fast; }
         void queryVideoSignalStatus() override;
         void setVideoStandard(uint8_t std) override;
+        void resetStreamPipeline() override {
+            sendResetStreamDma();
+            setFpgaWork();
+        }
         void setFpgaIdle();
         void setFpgaWork();
         bool sendResetStreamDma();

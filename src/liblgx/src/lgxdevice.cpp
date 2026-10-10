@@ -430,81 +430,92 @@ namespace lgx2 {
                                     }
                                     uint32_t strideWords = mode.width / 2;
                                     uint32_t fieldLines = mode.height / 2;
-                                    // CV-04: determine the field parity. Use the
-                                    // device-supplied field index (C0 metadata b2
-                                    // bit 0, see PROTOCOL.md) only once it has been
-                                    // observed to actually alternate; otherwise some
-                                    // firmware holds it constant and weaving would
-                                    // never complete (1080i black screen). Fall back
-                                    // to a local toggle in that case.
-                                    bool deviceOdd = (_currentFieldFlags & 0x01) != 0;
-                                    int8_t deviceParity = deviceOdd ? 1 : 0;
-                                    if (_lastDeviceParity >= 0 && deviceParity != _lastDeviceParity &&
-                                        _deviceParityChanges < 0xFF) {
-                                        _deviceParityChanges++;
-                                        if (_deviceParityChanges >= 2) {
-                                            _deviceParityReliable = true;
-                                        }
-                                    }
-                                    _lastDeviceParity = deviceParity;
-
-                                    bool oddField;
-                                    if (_deviceParityReliable) {
-                                        oddField = deviceOdd;
-                                    } else {
-                                        _weaveToggle = !_weaveToggle;
-                                        oddField = _weaveToggle;
-                                    }
-                                    // If the chosen parity is already woven for this
-                                    // frame, the opposite field was dropped or the
-                                    // device flag is stuck. Use the free slot so the
-                                    // weave still completes instead of waiting forever
-                                    // (which shows as a black/never-updating 1080i
-                                    // picture).
-                                    if (_fieldsWoven & (oddField ? 0x02 : 0x01)) {
-                                        oddField = !oddField;
-                                    }
-                                    uint32_t *srcField = _frameBuilder.videoFrameData();
-                                    for (uint32_t y = 0; y < fieldLines && (y * strideWords) < frameWords; y++) {
-                                        uint32_t dstLine = oddField ? (y * 2 + 1) : (y * 2);
-                                        memcpy(_interlacedBuffer.data() + dstLine * strideWords,
-                                               srcField + y * strideWords,
-                                               strideWords * sizeof(uint32_t));
-                                    }
-                                    _fieldsWoven |= oddField ? 0x02 : 0x01;
-                                    // Only present a complete woven frame once both fields
-                                    // have been written; a half-written weave would combine
-                                    // newly captured lines with stale ones.
-                                    if (_fieldsWoven == 0x03) {
+                                    // CV-23: a field whose word count does not match
+                                    // the locked geometry is corrupt - weaving it with
+                                    // the other (good) field would blend shifted rows.
+                                    // Drop the field and wait for a clean pair instead
+                                    // of presenting a combed / skewed picture.
+                                    if (frameWords != strideWords * fieldLines) {
+                                        noteCorruptFrame(frameWords, mode.name, "invalid field size");
                                         _fieldsWoven = 0;
-                                        if (_validFrames <= 5 || (_validFrames % 120) == 0) {
-                                            printf("[Video] Woven interlaced frame: %ux%u b2=0x%02x hwInt=%d parityReliable=%d fieldWords=%u\n",
-                                                   _activeWidth, _activeHeight, _currentFieldFlags,
-                                                   (_currentFieldFlags & 0x80) != 0, _deviceParityReliable, frameWords);
-                                            fflush(stdout);
+                                    } else {
+                                        // CV-04: determine the field parity. Use the
+                                        // device-supplied field index (C0 metadata b2
+                                        // bit 0, see PROTOCOL.md) only once it has been
+                                        // observed to actually alternate; otherwise some
+                                        // firmware holds it constant and weaving would
+                                        // never complete (1080i black screen). Fall back
+                                        // to a local toggle in that case.
+                                        bool deviceOdd = (_currentFieldFlags & 0x01) != 0;
+                                        int8_t deviceParity = deviceOdd ? 1 : 0;
+                                        if (_lastDeviceParity >= 0 && deviceParity != _lastDeviceParity &&
+                                            _deviceParityChanges < 0xFF) {
+                                            _deviceParityChanges++;
+                                            if (_deviceParityChanges >= 2) {
+                                                _deviceParityReliable = true;
+                                            }
                                         }
-                                        produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
-                                                         reinterpret_cast<uint8_t *>(_interlacedBuffer.data()));
-                                        _validFrames++;
+                                        _lastDeviceParity = deviceParity;
+
+                                        bool oddField;
+                                        if (_deviceParityReliable) {
+                                            oddField = deviceOdd;
+                                        } else {
+                                            _weaveToggle = !_weaveToggle;
+                                            oddField = _weaveToggle;
+                                        }
+                                        // If the chosen parity is already woven for this
+                                        // frame, the opposite field was dropped or the
+                                        // device flag is stuck. Use the free slot so the
+                                        // weave still completes instead of waiting forever
+                                        // (which shows as a black/never-updating 1080i
+                                        // picture).
+                                        if (_fieldsWoven & (oddField ? 0x02 : 0x01)) {
+                                            oddField = !oddField;
+                                        }
+                                        uint32_t *srcField = _frameBuilder.videoFrameData();
+                                        for (uint32_t y = 0; y < fieldLines && (y * strideWords) < frameWords; y++) {
+                                            uint32_t dstLine = oddField ? (y * 2 + 1) : (y * 2);
+                                            memcpy(_interlacedBuffer.data() + dstLine * strideWords,
+                                                   srcField + y * strideWords,
+                                                   strideWords * sizeof(uint32_t));
+                                        }
+                                        _fieldsWoven |= oddField ? 0x02 : 0x01;
+                                        // Only present a complete woven frame once both fields
+                                        // have been written; a half-written weave would combine
+                                        // newly captured lines with stale ones.
+                                        if (_fieldsWoven == 0x03) {
+                                            _fieldsWoven = 0;
+                                            if (_validFrames <= 5 || (_validFrames % 120) == 0) {
+                                                printf("[Video] Woven interlaced frame: %ux%u b2=0x%02x hwInt=%d parityReliable=%d fieldWords=%u\n",
+                                                       _activeWidth, _activeHeight, _currentFieldFlags,
+                                                       (_currentFieldFlags & 0x80) != 0, _deviceParityReliable, frameWords);
+                                                fflush(stdout);
+                                            }
+                                            produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
+                                                             reinterpret_cast<uint8_t *>(_interlacedBuffer.data()));
+                                            _validFrames++;
+                                            _skewRun = 0;
+                                        }
                                     }
                                 } else {
-                                    if (frameWords != mode.targetWords &&
-                                        (frameWords != _lastLoggedFrameWords || (++_sizeLogCount % 120) == 0)) {
-                                        // CV-10: make size mismatches visible instead of
-                                        // silently padding/truncating them away
-                                        printf("[Video] Frame size %u words differs from %s target %u by %+d words\n",
-                                               frameWords, mode.name, mode.targetWords,
-                                               static_cast<int>(frameWords) - static_cast<int>(mode.targetWords));
-                                        fflush(stdout);
-                                        _lastLoggedFrameWords = frameWords;
+                                    // CV-23: a frame whose word count differs from the
+                                    // locked geometry is corrupt by construction - a
+                                    // single word lost or duplicated mid-frame shifts
+                                    // every following scanline by 1 word (2 px), so
+                                    // padding / truncating and presenting it would put
+                                    // a permanent "skewed lines" seam into the picture.
+                                    // Drop instead: a skipped frame is invisible next
+                                    // to a misaligned one, and the next genuine C0
+                                    // re-anchors the raster.
+                                    if (frameWords != mode.targetWords) {
+                                        noteCorruptFrame(frameWords, mode.name, "locked-mode size mismatch");
+                                    } else {
+                                        produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
+                                                         reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
+                                        _validFrames++;
+                                        _skewRun = 0;
                                     }
-                                    if (frameWords < mode.targetWords) {
-                                        uint32_t *vData = _frameBuilder.videoFrameData();
-                                        std::fill(vData + frameWords, vData + mode.targetWords, 0x80108010u);
-                                    }
-                                    produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
-                                                     reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
-                                    _validFrames++;
                                 }
                             } else {
                                 // Not the locked mode: discard any half-woven field state
@@ -671,6 +682,68 @@ namespace lgx2 {
 
     void Device::produceAudioData(uint8_t *data, uint32_t byteLength) {
         _audioOutput->audioFrameAvailable((uint32_t *) data, byteLength);
+    }
+
+    void Device::reassertStream() {
+        _autoResyncCount++;
+        if (_stream) {
+            // Mimic a replug in software: reset the FX3 stream DMA (clears its
+            // internal FIFO pointers) and re-assert the FPGA streaming-enable
+            // bit - the exact sequence queueFrameRead uses when streaming starts.
+            _stream->resetStreamPipeline();
+        }
+
+        // Re-anchor every parser state on the next genuine C0. Frames buffered
+        // before the reset are stale garbage; the lock hunt below discards
+        // everything until a fresh, valid C0 header arrives.
+        _streamLocked = false;
+        _inVideo = false;
+        _inAudio = false;
+        _inAudioPadding = false;
+        _remainingAudioWords = 0;
+        _pendingWords.clear();
+        _frameBuilder.clearVideo();
+        _frameBuilder.clearAudio();
+        _fieldsWoven = 0;
+        _deviceParityReliable = false;
+        _lastDeviceParity = -1;
+        _deviceParityChanges = 0;
+        _weaveToggle = false;
+        _lastSeq = -1;
+        _consecutiveValidFrames = 0;
+        _audioMuted = true;
+        _skewRun = 0;
+        _c0HuntCount = 0;
+        printf("[Device] Capture pipeline re-asserted (software replug #%u) - waiting for the next C0 lock\n",
+               _autoResyncCount);
+        fflush(stdout);
+    }
+
+    void Device::noteCorruptFrame(uint32_t frameWords, const char *modeName, const char *reason) {
+        _skewRun++;
+        _droppedFrames++;
+        _consecutiveValidFrames = 0;
+        if (_skewLogCount == 0 || (_skewLogCount % 60) == 0) {
+            printf("[Video] Dropped corrupt frame: %u words, %s (%s), streak=%u\n",
+                   frameWords, modeName, reason, _skewRun);
+            fflush(stdout);
+        }
+        _skewLogCount++;
+
+        // A persistent run of un-presentable frames while the receiver reports a
+        // *locked* signal means the capture pipeline itself is stuck (FPGA/FX3
+        // FIFO pointers or the HDMI receiver) - the state that previously only a
+        // physical replug could clear. Fire the software replug automatically.
+        lgx2::VideoSignalInfo sig{};
+        if (_stream) {
+            sig = _stream->getVideoSignalInfo();
+        }
+        if (_skewRun >= kCorruptFramesBeforeAutoResync && sig.locked && sig.activeWidth > 0 && _streamLocked) {
+            printf("[Video] Capture pipeline corrupt for %u consecutive frames while receiver is locked - "
+                   "automatic re-sync (software replug)\n", _skewRun);
+            fflush(stdout);
+            reassertStream();
+        }
     }
 
     void Device::holdWordsForNextTransfer(const uint32_t *words, uint32_t count, uint32_t start) {

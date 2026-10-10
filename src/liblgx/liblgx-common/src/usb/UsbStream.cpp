@@ -625,8 +625,12 @@ namespace libusb {
     void UsbStream::controlLoop() {
         while (!_controlStop.load(std::memory_order_acquire)) {
             queryVideoSignalStatus();
-            // Wake every 50ms so shutdown is not delayed by the poll interval
-            for (int i = 0; i < 20 && !_controlStop.load(std::memory_order_acquire); ++i) {
+            // Poll ~10x/s. The ADV7604 geometry is the authoritative width used
+            // to reject transitional frames during a resolution switch, so it
+            // must refresh quickly; with the two-confirmation debounce a change
+            // is published in ~200 ms instead of ~2 s. Wake every 50 ms so
+            // shutdown is not delayed by the poll interval.
+            for (int i = 0; i < 2 && !_controlStop.load(std::memory_order_acquire); ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         }
@@ -638,6 +642,19 @@ namespace libusb {
         if (_hasError.load(std::memory_order_acquire)) {
             std::lock_guard<std::mutex> errLock(_errorMutex);
             throw std::runtime_error(_errorMessage);
+        }
+
+        // CV-17: block for the next transfer instead of busy-spinning the main
+        // thread. The completion callback notifies _queueCv; the timeout only
+        // matters when the stream is idle (or shutting down), where it bounds
+        // the latency of SDL event polling without burning a core.
+        {
+            std::unique_lock<std::mutex> lock(_queueMutex);
+            if (_frameQueue.empty() && !_shuttingDown.load(std::memory_order_acquire)) {
+                _queueCv.wait_for(lock, std::chrono::milliseconds(5), [this] {
+                    return !_frameQueue.empty() || _shuttingDown.load(std::memory_order_acquire);
+                });
+            }
         }
 
         // CV-02: bound the work done per iteration so SDL event handling and
@@ -719,6 +736,7 @@ namespace libusb {
         }
         _frameQueue.push(std::move(item));
         _queuedTransfers++;
+        _queueCv.notify_one();  // CV-17: wake the main loop immediately
         if ((_queuedTransfers % 600) == 0) {
             printf("usb: queued=%d dropped=%d qdepth=%d high-water=%d\n",
                 _queuedTransfers, _droppedTransfers, (int)_frameQueue.size(), _queueHighWater);
@@ -758,6 +776,7 @@ namespace libusb {
             sendResetStreamDma();
         }
         _shuttingDown.store(true, std::memory_order_release);
+        _queueCv.notify_all();  // CV-17: release any main-loop wait
 
         for (auto *transfer : _transfers) {
             libusb_cancel_transfer(transfer);

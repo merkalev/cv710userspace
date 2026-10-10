@@ -363,38 +363,125 @@ Credit: This work builds upon the pioneering research and userspace driver found
 
 ---
 
-## 15. Misaligned Lines for a Second After a Resolution Switch (FIXED)
+## 15. Misaligned Lines for a Second After a Resolution Switch (TWO FIXES — pending re-validation)
 
 ### Symptom Sometimes Observed
 - Switching resolution / refresh (e.g. 1080p -> 720p) shows a brief spell (~1 s) of
   horizontally shifted / wrapped "misaligned lines", which then clears by itself.
   Occurs occasionally, not on every switch.
+- Re-validation after fix #1 showed the artifact as **video-only, ~3-4 frames,
+  "skewed but straight", content duplicated mostly on the right side, lines not
+  matching** - i.e. a row-stride mismatch, self-healing once the new mode locks.
 
-### Root Cause
-- Every `0xC0000000` / `0xC1000000` marker word is validated before ending/starting a
-  frame, but the *failure* path treated the marker as **pixel data** and accumulated it
-  into the video buffer. A rejected frame-start or frame-end marker therefore shifted
-  every remaining scanline by 2 words (4 px), wrapping the row stride - the classic
-  "misaligned lines" artifact from devlog 01.
-- During a resolution switch / HDMI clock recovery the stream contains corrupt/
-  transitional bytes, so a marker metadata word occasionally fails its checksum. The
-  resulting frame kept its (roughly in-range) word count long enough to pass the mode
-  ranges, so the shifted frame reached the display. It self-healed on the next clean
-  C0 - hence "for a second, happens sometimes".
+### Root Cause — two independent mechanisms
+1. **Marker absorption**: every `0xC0000000` / `0xC1000000` marker word is validated
+   before ending/starting a frame, but the *failure* path treated the marker as pixel
+   data and accumulated it into the video buffer, shifting every remaining scanline by
+   2 words (4 px) and wrapping the row stride. (Fixed by marker handling below.)
+2. **Wrong-width transitional frame**: while the source re-locks, the FPGA can emit a
+   frame with a *valid* marker pair and an *in-range* word count for the wrong width.
+   Example: a 1920-wide 480-line remnant and a 1280-wide 720-line frame both total
+   460800 words, so the word-count ranges cannot tell them apart. Presenting the
+   remnant with the locked 1280 stride shows the end of each 1920-wide line wrapping
+   into the next line -> "duplicated right side / misaligned lines" for a few frames.
+   Only the ADV7604-reported geometry can discriminate these.
 
 ### Resolution
-- `Device::onFrameData` no longer absorbs rejected markers:
+- Fix #1 — `Device::onFrameData` no longer absorbs rejected markers:
   - A **non-genuine C0** (metadata fails `b1 == 0x01` or checksum) now discards the
     in-progress frame, clears `_inVideo`, and resynchronises on the next genuine C0.
   - A **lone C1** (trailer fails checksum / `tb1 == 0x02` / sequence, or frame size
-    < 40000 words) likewise ends and discards the partial frame instead of treating the
-    marker as pixels.
-- Both count as dropped frames and reset the audio-unmute counter, consistent with the
-  other drop paths. Geometry is now locked to genuine marker boundaries only; a shifted
-  frame can no longer pass the word-count check and reach the display.
+    < 40000 words) likewise ends and discards the partial frame instead of treating
+    the marker as pixels.
+- Fix #2 — receiver geometry cross-check + fast status refresh:
+  - A locked ADV7604 snapshot whose `activeWidth` contradicts the frame's detected
+    mode width now drops the frame (logged as
+    `Dropped transitional frame: N words -> WxH (...) contradicts receiver width`)
+    *without* touching the mode hysteresis, so the wrong-width frame can never be
+    locked or presented.
+  - `UsbStream::controlLoop` now polls the status every ~100 ms instead of ~1 s, so
+    the two-confirmation debounce publishes a geometry change in ~200 ms instead of
+    ~2 s. Expected behaviour on a switch: the last clean frame holds for up to
+    ~200 ms, then the new mode appears perfectly aligned - no skew.
+- Both count as dropped frames and reset the audio-unmute counter, consistent with
+  the other drop paths.
 
 ### What to check on hardware
-- Switch resolution / refresh several times in a row (and from standby to signal). No
-  misaligned/shifted frame should appear; worst case is one clean dropped frame at the
-  transition, and audio must not go out of tune (unmute gate unchanged).
+- Switch resolution / refresh several times in a row (and from standby to signal).
+  No misaligned/shifted frame should appear; expected worst case is a brief hold of
+  the previous frame (~200 ms) while the receiver catches up, plus at most one logged
+  transitional drop per switch. Audio must not go out of tune (unmute gate unchanged).
+- If a mode ever stays black/frozen after a switch, the receiver width is being read
+  wrong for that mode: the `Dropped transitional frame` log will show it repeating.
+
+---
+
+## 16. Startup Shows "No Signal" / a Blue Flash Before the Picture (CV-18 — FIXED)
+
+### Symptom Sometimes Observed
+- On launch the standby image appears, then there is a brief **blue flash**, then the
+  real picture. Sometimes the standby screen wrongly says "NO SIGNAL" even when a
+  source is already connected.
+
+### Root Cause
+1. The standby screen dismissed as soon as the *first* frame arrived, even before the
+   ADV7604 status had been read. During HDMI negotiation the FPGA/receiver emits
+   free-run / transitional frames (often a blue raster), which were therefore shown
+   for a frame or two - the "blue flash".
+2. The procedural fallback card used a saturated-blue palette, and the standby text
+   said "[ NO SIGNAL ]" during the bootstrap window when the state was simply unknown.
+
+### Resolution
+- The standby screen is now held until the receiver reports a **valid, locked** signal
+  with known geometry (`valid && locked && activeWidth > 0`) for a short settle period
+  (~300 ms). Transitional/free-run frames are masked behind it.
+- A 3 s safety valve shows the preview anyway if the status channel never validates, so
+  the screen can never be permanently stuck.
+- The first live frame is cross-faded in (CV-18b) instead of popping.
+- The standby text is state-aware: "Initializing capture" (no status yet), "No HDMI
+  signal" (unlocked), "HDMI locked" (waiting for the first frame). The blue procedural
+  fallback was replaced with a neutral dark card.
+- `Device::run()` now publishes the cached signal snapshot every 200 ms instead of
+  1000 ms so the gate and HUD react quickly (the snapshot copy is cheap; the actual I2C
+  polling still runs on the control thread).
+
+---
+
+## 17. High CPU / Main-Loop Busy-Spin (CV-17 — FIXED)
+
+### Symptom
+- The process pegged a full CPU core even when idle, and V4L2 loopback output was
+  flooded with frames.
+
+### Root Cause
+- The main loop (`while (!do_exit) { SDL_PollEvent; device.run(); }`) had no pacing.
+  `UsbStream::update()` returned immediately when the queue was empty, so the loop spun
+  as fast as the CPU allowed. `V4LFrameOutput::display()` wrote the full 4 MB frame on
+  **every** iteration (no new-frame guard), so the loopback device received thousands of
+  redundant writes per second.
+
+### Resolution
+- `UsbStream` now exposes a condition variable: the main thread blocks in `update()`
+  (5 ms timeout) and is woken by the USB completion callback when a transfer is queued.
+- `V4LFrameOutput` only writes when a new frame has actually arrived.
+- Net effect: idle CPU drops to near zero and the loopback stream carries one frame per
+  captured frame rather than a CPU-speed flood.
+
+---
+
+## 18. V4L2 Output Ignored Resolution and Audio Went to the Desktop (CV-19 — FIXED)
+
+### V4L2 dynamic format
+- `V4LFrameOutput` assumed a fixed 1920x1080 / 4 MB payload. It now renegotiates
+  `VIDIOC_S_FMT` whenever the source geometry changes, writes the correct byte count,
+  and drops (rather than corrupts) a frame when a consumer holds a fixed format.
+
+### Virtual audio output
+- V4L2 carries video only, so audio was played through the desktop default. Added
+  `--audio-device <name|index>` and `--audio-loopback` (plus `--list-audio-devices`) to
+  route the captured 48 kHz stereo stream to any SDL playback device, including an
+  `snd-aloop` / PipeWire virtual sink, so third-party software can capture it.
+- When `-d` (V4L2) is used, a loopback sink is auto-preferred if one is present, falling
+  back to the desktop default otherwise.
+
 

@@ -54,9 +54,11 @@ namespace lgx2 {
         // Refresh metrics from the cached signal status. CV-03: the periodic
         // ADV7604 I2C polling runs on the stream's own control thread (see
         // UsbStream::controlLoop), so a stalled control endpoint can no longer
-        // block video processing or SDL presentation here.
+        // block video processing or SDL presentation here. This is only a cached
+        // snapshot copy, so publish it often enough that the standby->live gate
+        // (CV-18b) and the HUD react quickly.
         if (_lastSignalCheck == std::chrono::steady_clock::time_point{} ||
-            (now - _lastSignalCheck) > std::chrono::milliseconds(1000)) {
+            (now - _lastSignalCheck) > std::chrono::milliseconds(200)) {
             _lastSignalCheck = now;
             VideoSignalInfo sig = _stream->getVideoSignalInfo();
             _audioOutput->setAudioSampleRate(sig.audioSampleRate);
@@ -362,7 +364,27 @@ namespace lgx2 {
                         // Genuine C1 trailer: active video frame or field is complete
                         uint32_t frameWords = _frameBuilder.videoFrameSize();
                         VideoMode mode = detectVideoMode(frameWords, (_currentFieldFlags & 0x80) != 0);
+
+                        // Receiver cross-check (resolution-switch desync guard):
+                        // the ADV7604 reports the real input geometry. While the
+                        // source re-locks, the FPGA can emit a transitional frame
+                        // with a valid marker pair and an in-range word count for
+                        // the WRONG width - e.g. a 1920-wide 480-line remnant and
+                        // a 1280-wide 720-line frame both total 460800 words.
+                        // Presenting it with the locked stride wraps the right
+                        // side of every line ("duplicated / misaligned lines" for
+                        // a few frames). If a locked receiver contradicts the
+                        // detected width, drop the frame and let the parser and
+                        // status catch up.
+                        bool receiverMismatch = false;
                         if (mode.valid) {
+                            lgx2::VideoSignalInfo sig = _stream->getVideoSignalInfo();
+                            if (sig.locked && sig.activeWidth > 0 && sig.activeWidth != mode.width) {
+                                receiverMismatch = true;
+                            }
+                        }
+
+                        if (mode.valid && !receiverMismatch) {
                             // Check mode stability hysteresis: require 4 consecutive matching frames
                             if (mode.width == _activeWidth && mode.height == _activeHeight) {
                                 _pendingCount = 0;
@@ -472,6 +494,19 @@ namespace lgx2 {
                                 // Not the locked mode: discard any half-woven field state
                                 _fieldsWoven = 0;
                             }
+                        } else if (receiverMismatch) {
+                            // Transitional frame whose detected width contradicts
+                            // the locked receiver: drop it without touching the
+                            // mode hysteresis, so a wrong-width frame can never be
+                            // locked or presented.
+                            if (++_receiverMismatchDrops <= 3 || (_receiverMismatchDrops % 300) == 0) {
+                                printf("[Video] Dropped transitional frame: %u words -> %ux%u (%s) contradicts receiver width\n",
+                                       frameWords, mode.width, mode.height, mode.name);
+                                fflush(stdout);
+                            }
+                            _droppedFrames++;
+                            _consecutiveValidFrames = 0;
+                            _fieldsWoven = 0;
                         } else if (frameWords > 0) {
                             if (frameWords != _lastLoggedFrameWords || (++_sizeLogCount % 60) == 0) {
                                 printf("[Video] Unmatched frameWords: %u (expected 1080p: ~1036800, 720p: ~460800, 1080i: ~518400)\n", frameWords);

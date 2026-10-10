@@ -17,11 +17,8 @@
   - Perform Rec.709/Rec.601 color matrix conversion inside an SDL3 / OpenGL / Vulkan fragment shader, dropping CPU usage to near 0%.
 - [ ] **SIMD AVX2 and NEON Intrinsics**:
   - Implement vectorized YUY2 to RGBA conversion using `_mm256_*` (x86_64) and NEON (ARM64) for headless V4L2 streaming.
-- [ ] **Dynamic V4L2 Loopback Format Re-negotiation**:
-  - Tear down and renegotiate `VIDIOC_S_FMT` dynamically on the fly when the physical HDMI resolution changes, allowing OBS and Discord to automatically follow source resolution changes.
-- [ ] **Virtual Audio Loopback Output**:
-  - Expose captured 48 kHz stereo audio to an ALSA loopback device (`snd-aloop`) or PipeWire virtual source, allowing capture in third-party software without requiring SDL desktop audio playback.
-- [ ] **Aspect Ratio Preservation for SD Sources**:
+- [x] **Dynamic V4L2 Loopback Format Re-negotiation**: `V4LFrameOutput` now renegotiates `VIDIOC_S_FMT` when the incoming geometry changes and only writes on new frames (CV-17). A consumer holding a fixed format is detected and mismatched frames are dropped instead of corrupting the stream.
+- [x] **Virtual Audio Loopback Output**: `--audio-device <name|index>` and `--audio-loopback` route captured audio to any SDL playback device, including an `snd-aloop`/PipeWire virtual sink, so it can be captured without desktop playback (CV-19). `--list-audio-devices` enumerates options. V4L2 output auto-prefers a loopback sink when one is present.- [ ] **Aspect Ratio Preservation for SD Sources**:
   - Add configurable aspect ratio handling (`16:9` vs `4:3` pillarboxing) for 480p and 576p video.
 - [ ] **HDCP Detection and Status Notification**:
   - Query ADV7604 HDMI map `0x68` register `0x05` bit 7 to detect encrypted input and display an OSD warning instead of a silent black screen.
@@ -38,6 +35,8 @@
 ## Completed Milestones
 - [x] Locked 1080p60 capture at sustained 60.0 fps with zero queue drops (`dropped=0`, `qdepth=1`).
 - [x] Multi-threaded CPU conversion across all available cores (`std::thread::hardware_concurrency()`).
+- [x] Removed the main-loop busy-spin: the main thread now blocks on a condition variable in `UsbStream::update()` and is woken by the USB completion callback, instead of pegging a full CPU core (CV-17).
+- [x] Removed the startup "blue flash": the standby screen is held until the receiver reports a valid, locked signal with known geometry for a short settle period, then the first frame cross-fades in (CV-18/18b).
 - [x] Resolved audio stuttering and pops by eliminating destructive playback buffer clears on video frame drops.
 - [x] Eliminated 720p false-classification oscillation loop and texture allocation crash by applying narrow tolerance bands and 5-frame hysteresis.
 - [x] Expanded USB queue depth to 128 transfers (~256 MB buffer) and pipeline depth to 16.

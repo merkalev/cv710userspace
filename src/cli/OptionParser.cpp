@@ -32,8 +32,11 @@ bool app::OptionParser::process(int argc, char **argv) {
         // CV-15/fast-start: long aliases so the trimmed bootstrap can be
         // selected explicitly. Default is the full capture.
         static struct option longOptions[] = {
-            {"fast-start",     no_argument, 0, 'b'},
-            {"full-bootstrap", no_argument, 0, 'B'},
+            {"fast-start",         no_argument,       0, 'b'},
+            {"full-bootstrap",     no_argument,       0, 'B'},
+            {"audio-device",       required_argument, 0, 1000},
+            {"audio-loopback",     no_argument,       0, 1001},
+            {"list-audio-devices", no_argument,       0, 1002},
             {0, 0, 0, 0}
         };
         switch(getopt_long(argc, argv, "vVd:hsgfS:c:i:bB", longOptions, nullptr))
@@ -43,6 +46,7 @@ bool app::OptionParser::process(int argc, char **argv) {
             case 'd':
                 std::cout << "Attempting to output to V4L2Loopback device: " << optarg << std::endl;
                 _videoOutput = new v4l::V4LFrameOutput(optarg);
+                _v4l2Output = true;
                 continue;
 #endif
 #endif
@@ -95,6 +99,17 @@ bool app::OptionParser::process(int argc, char **argv) {
                     _scale = lgx2::VideoScale::Quarter;
                 }
                 continue;
+            case 1000:
+                _audioDevice = optarg;
+                std::cout << "Routing captured audio to playback device: " << _audioDevice << std::endl;
+                continue;
+            case 1001:
+                _audioLoopback = true;
+                std::cout << "Routing captured audio to a loopback (virtual) output device" << std::endl;
+                continue;
+            case 1002:
+                sdl::SdlAudioOutput::printAudioDevices();
+                return false;
             case 'h':
             default :
                 std::cout << argv[0] <<
@@ -114,7 +129,10 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t-c COLORSPACE\tSpecify initial colorspace (auto, bt709, bt709full, bt601, bt601full, uyvy, yuy2)\n"
                     "\t-i INPUT\tSpecify initial video input source (hdmi)\n"
                     "\t-b, --fast-start\tUse the trimmed bootstrap (default; same final register state)\n"
-                    "\t-B, --full-bootstrap\tForce the full capture replay (slow: ~7100 transfers)\n";
+                    "\t-B, --full-bootstrap\tForce the full capture replay (slow: ~7100 transfers)\n"
+                    "\t--audio-device NAME|INDEX\tRoute audio to a specific playback device (substring or index)\n"
+                    "\t--audio-loopback\tRoute audio to a virtual loopback sink (snd-aloop / PipeWire) for capture\n"
+                    "\t--list-audio-devices\tList available audio playback devices and exit\n";
                 return false;
             case -1:
                 break;

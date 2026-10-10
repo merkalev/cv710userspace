@@ -76,6 +76,17 @@ namespace sdl {
         bool _hasSignal{false};
         bool _newFrameAvailable{false};
 
+        // CV-18: cross-fade the first live frame over the standby screen so the
+        // switch is not an abrupt flash.
+        std::chrono::steady_clock::time_point _videoFadeStart{};
+        bool _videoFadeActive{false};
+        bool _wasShowingSplash{true};
+
+        // CV-18b: mask HDMI-negotiation/free-run transitional frames (the blue
+        // flash) by holding the standby screen until the signal is settled.
+        std::chrono::steady_clock::time_point _firstFrameTime{};
+        std::chrono::steady_clock::time_point _signalReadySince{};
+
         // OSD and diagnostic HUD state
         bool _cKeyPressed{false};
         bool _hudTogglePressed{false};

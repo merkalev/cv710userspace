@@ -39,7 +39,16 @@ int main(int argc, char **argv) {
     }
 
     if (audioOutput == nullptr) {
-        audioOutput = new sdl::SdlAudioOutput{};
+        auto *sdlAudio = new sdl::SdlAudioOutput{};
+        if (!optionParser.audioDevice().empty()) {
+            sdlAudio->setOutputDevice(optionParser.audioDevice());
+        }
+        // CV-19: an explicit --audio-loopback is required; V4L2 output only
+        // *prefers* a loopback sink so audio is capturable, falling back to the
+        // desktop default when no virtual sink is available.
+        sdlAudio->setLoopbackRequired(optionParser.audioLoopback());
+        sdlAudio->setLoopbackPreferred(optionParser.audioLoopback() || optionParser.v4l2Output());
+        audioOutput = sdlAudio;
     }
 
     if (logger == nullptr) {

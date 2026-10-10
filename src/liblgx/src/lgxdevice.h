@@ -209,6 +209,9 @@ namespace lgx2 {
         // recovering (C1 b2 bit 4). A persistent non-zero growth here means the
         // flag is stuck and the drop heuristic should be re-examined.
         uint32_t _syncDropCount{0};
+        // Transitional frames dropped because their detected width contradicted a
+        // locked ADV7604 receiver geometry (resolution-switch desync guard).
+        uint32_t _receiverMismatchDrops{0};
 
         // Resolution stability hysteresis
         uint32_t _activeWidth{1920};

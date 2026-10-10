@@ -5,6 +5,7 @@
 #include <queue>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <chrono>
 #include <libusb-1.0/libusb.h>
@@ -137,6 +138,7 @@ namespace libusb {
 
         std::thread _readThread;
         std::mutex _queueMutex;
+        std::condition_variable _queueCv;  // CV-17: wake the main loop on new data
         std::queue<QueuedTransfer> _frameQueue;
         std::vector<std::vector<uint8_t>> _freeBuffers;
 

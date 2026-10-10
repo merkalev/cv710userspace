@@ -395,6 +395,9 @@ namespace sdl {
         if (!image || !_renderer) return;
         _lastFrameTime = std::chrono::steady_clock::now();
         _hasSignal = true;
+        if (_firstFrameTime == std::chrono::steady_clock::time_point{}) {
+            _firstFrameTime = _lastFrameTime;
+        }
 
         int targetW = static_cast<int>(width);
         int targetH = static_cast<int>(height);
@@ -555,12 +558,34 @@ namespace sdl {
             }
         }
 
-        // A splash is shown when no frames are arriving, but also when the
-        // ADV7604 reports that HDMI is not locked. Without the lock check, the
-        // receiver's free-run pattern (typically 720x576) would be mistaken for
-        // a real signal and suppress the "no signal" splash.
-        const bool noRealSignal = !_hasSignal ||
-            (_metrics.signalInfo.valid && !_metrics.signalInfo.locked);
+        // CV-18b: hold the standby screen until the receiver reports a *valid,
+        // locked* signal with known geometry for a short settle period. Frames
+        // can start flowing before the ADV7604 has finished HDMI negotiation and
+        // those free-run / transitional frames render as a brief blue flash.
+        // Masking them behind the standby image avoids showing garbage between
+        // the splash and the real picture.
+        const lgx2::VideoSignalInfo &si = _metrics.signalInfo;
+        const bool signalReady = _hasSignal && si.valid && si.locked && si.activeWidth > 0;
+        if (signalReady) {
+            if (_signalReadySince == std::chrono::steady_clock::time_point{}) {
+                _signalReadySince = now;
+            }
+        } else {
+            _signalReadySince = std::chrono::steady_clock::time_point{};
+        }
+        const bool settled = signalReady &&
+            (now - _signalReadySince) >= std::chrono::milliseconds(300);
+
+        // Safety valve: if the status channel never validates but frames keep
+        // arriving, never hide the preview permanently.
+        bool forceShow = false;
+        if (!settled && _hasSignal &&
+            _firstFrameTime != std::chrono::steady_clock::time_point{} &&
+            (now - _firstFrameTime) > std::chrono::seconds(3)) {
+            forceShow = true;
+        }
+
+        const bool noRealSignal = !(settled || forceShow);
 
         if (noRealSignal) {
             if (now - _lastSplashRender >= std::chrono::milliseconds(33)) {
@@ -571,7 +596,16 @@ namespace sdl {
                 }
                 SDL_RenderPresent(_renderer);
             }
+            _wasShowingSplash = true;
             return;
+        }
+
+        // CV-18: the first live frame after the standby screen is cross-faded in
+        // rather than popping abruptly over it.
+        if (_wasShowingSplash) {
+            _wasShowingSplash = false;
+            _videoFadeActive = true;
+            _videoFadeStart = now;
         }
 
         bool shouldRender = _newFrameAvailable;
@@ -581,7 +615,26 @@ namespace sdl {
         }
 
         if (shouldRender) {
+            uint8_t videoAlpha = 255;
+            if (_videoFadeActive) {
+                auto fadeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - _videoFadeStart).count();
+                if (fadeMs >= 220) {
+                    _videoFadeActive = false;
+                } else {
+                    videoAlpha = static_cast<uint8_t>(255 * fadeMs / 220);
+                }
+            }
+
+            SDL_BlendMode prevBlend = SDL_BLENDMODE_NONE;
+            SDL_GetTextureBlendMode(_texture, &prevBlend);
+            if (videoAlpha < 255) {
+                SDL_SetTextureBlendMode(_texture, SDL_BLENDMODE_BLEND);
+            }
+            SDL_SetTextureAlphaMod(_texture, videoAlpha);
             SDL_RenderTexture(_renderer, _texture, nullptr, nullptr);
+            if (prevBlend != SDL_BLENDMODE_BLEND) {
+                SDL_SetTextureBlendMode(_texture, prevBlend);
+            }
 
             if (hudAlpha > 0) {
                 renderDiagnosticHud(hudAlpha);
@@ -703,23 +756,30 @@ namespace sdl {
     void SdlVideoOutput::loadSplashBitmaps() {
         if (!_renderer) return;
 
-        std::vector<std::string> searchPaths;
-        searchPaths.emplace_back("assets/aver_custom_no_signal.bmp");
-        searchPaths.emplace_back("../assets/aver_custom_no_signal.bmp");
+        const std::string file = "assets/aver_custom_no_signal.bmp";
 
-        const char *basePath = SDL_GetBasePath();
-        if (basePath) {
+        std::vector<std::string> dirs;
+        dirs.emplace_back("");        // relative to the current working directory
+        dirs.emplace_back("./");
+
+        // CV-18: the executable normally lives in build/src/cli, so walking up a
+        // few parents is what actually finds the in-tree assets/ folder. The
+        // previous list only reached two levels and missed it when run from the
+        // build directory (which is why the blue procedural fallback appeared).
+        if (const char *basePath = SDL_GetBasePath()) {
             std::string base(basePath);
-            searchPaths.push_back(base + "assets/aver_custom_no_signal.bmp");
-            searchPaths.push_back(base + "../assets/aver_custom_no_signal.bmp");
-            searchPaths.push_back(base + "../../assets/aver_custom_no_signal.bmp");
-            searchPaths.push_back(base + "../share/cv710userspace/assets/aver_custom_no_signal.bmp");
+            dirs.push_back(base);
+            for (int i = 1; i <= 4; ++i) {
+                base += "../";
+                dirs.push_back(base);
+            }
         }
 
-        searchPaths.emplace_back("/usr/local/share/cv710userspace/assets/aver_custom_no_signal.bmp");
-        searchPaths.emplace_back("/usr/share/cv710userspace/assets/aver_custom_no_signal.bmp");
+        dirs.emplace_back("/usr/local/share/cv710userspace/");
+        dirs.emplace_back("/usr/share/cv710userspace/");
 
-        for (const auto &path : searchPaths) {
+        for (const auto &dir : dirs) {
+            std::string path = dir + file;
             SDL_Surface *surf = SDL_LoadBMP(path.c_str());
             if (surf) {
                 _splashTexture = SDL_CreateTextureFromSurface(_renderer, surf);
@@ -741,44 +801,85 @@ namespace sdl {
         SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL_RenderClear(_renderer);
 
-        if (_splashTexture) {
-            // Render the official 640x480 AVerMedia splash image centered on black background
-            const int splashW = 640;
-            const int splashH = 480;
-            float dstX = (static_cast<float>(winW) - splashW) / 2.0f;
-            float dstY = (static_cast<float>(winH) - splashH) / 2.0f;
-            SDL_FRect dstRect{dstX, dstY, static_cast<float>(splashW), static_cast<float>(splashH)};
-            SDL_RenderTexture(_renderer, _splashTexture, nullptr, &dstRect);
+        // CV-18: distinguish "we have not read the receiver status yet" from a
+        // genuine loss of signal. Showing "[ NO SIGNAL ]" during the ~half second
+        // while the FPGA bootstraps is misleading and was the main startup
+        // complaint.
+        const lgx2::VideoSignalInfo &si = _metrics.signalInfo;
+        const char *heading;
+        const char *detail;
+        uint8_t hr, hg, hb;
+        if (!si.valid) {
+            heading = "Initializing capture";
+            detail  = "Preparing the CV710 HDMI receiver...";
+            hr = 120; hg = 200; hb = 230;      // cool cyan
+        } else if (!si.locked) {
+            heading = "No HDMI signal";
+            detail  = "Connect a source to the receiver's HDMI input.";
+            hr = 230; hg = 170; hb = 90;       // amber
         } else {
-            // Procedural fallback card on black background
-            float cardW = 720.0f;
-            float cardH = 380.0f;
-            float cardX = (static_cast<float>(winW) - cardW) / 2.0f;
-            float cardY = (static_cast<float>(winH) - cardH) / 2.0f;
+            heading = "HDMI locked";
+            detail  = "Waiting for the first complete video frame...";
+            hr = 120; hg = 210; hb = 150;       // green
+        }
+
+        // Animated activity indicator so the screen never looks frozen.
+        const int dots = static_cast<int>(
+            (std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count() / 400) % 4);
+
+        if (_splashTexture) {
+            // Keep the neutral AVerMedia standby image, centred at native size,
+            // with a clean status caption underneath.
+            const float splashW = 640.0f;
+            const float splashH = 480.0f;
+            float dstX = (static_cast<float>(winW) - splashW) / 2.0f;
+            float dstY = (static_cast<float>(winH) - splashH) / 2.0f - 24.0f;
+            SDL_FRect dstRect{dstX, dstY, splashW, splashH};
+            SDL_RenderTexture(_renderer, _splashTexture, nullptr, &dstRect);
+
+            SDL_SetRenderDrawColor(_renderer, hr, hg, hb, 255);
+            SDL_SetRenderScale(_renderer, 2.0f, 2.0f);
+            SDL_RenderDebugText(_renderer, (static_cast<float>(winW) / 2.0f - 90.0f) / 2.0f,
+                                (dstY + splashH + 20.0f) / 2.0f, heading);
+            SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
+        } else {
+            // Neutral procedural standby card (replaces the old saturated-blue
+            // fallback that produced the "blue flash").
+            const float cardW = 720.0f;
+            const float cardH = 300.0f;
+            const float cardX = (static_cast<float>(winW) - cardW) / 2.0f;
+            const float cardY = (static_cast<float>(winH) - cardH) / 2.0f;
 
             SDL_FRect cardRect{cardX, cardY, cardW, cardH};
-            SDL_SetRenderDrawColor(_renderer, 24, 32, 47, 255);
+            SDL_SetRenderDrawColor(_renderer, 16, 20, 28, 255);
             SDL_RenderFillRect(_renderer, &cardRect);
 
-            SDL_SetRenderDrawColor(_renderer, 25, 118, 210, 255);
+            SDL_SetRenderDrawColor(_renderer, 44, 56, 74, 255);
             SDL_RenderRect(_renderer, &cardRect);
 
-            SDL_FRect barRect{cardX, cardY, cardW, 6.0f};
-            SDL_SetRenderDrawColor(_renderer, 33, 150, 243, 255);
+            // Thin, muted accent rule across the top of the card.
+            SDL_FRect barRect{cardX, cardY, cardW, 3.0f};
+            SDL_SetRenderDrawColor(_renderer, 60, 140, 150, 255);
             SDL_RenderFillRect(_renderer, &barRect);
 
             SDL_SetRenderScale(_renderer, 2.0f, 2.0f);
-            SDL_SetRenderDrawColor(_renderer, 220, 230, 242, 255);
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 2.0f, (cardY + 35.0f) / 2.0f, "AVerMedia ExtremeCap U3 (CV710)");
+            SDL_SetRenderDrawColor(_renderer, 210, 220, 232, 255);
+            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 2.0f, (cardY + 30.0f) / 2.0f,
+                                "AVerMedia ExtremeCap U3 (CV710)");
 
             SDL_SetRenderScale(_renderer, 3.0f, 3.0f);
-            SDL_SetRenderDrawColor(_renderer, 255, 179, 0, 255);
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 3.0f, (cardY + 95.0f) / 3.0f, "[ NO SIGNAL ]");
+            SDL_SetRenderDrawColor(_renderer, hr, hg, hb, 255);
+            char headingBuf[64];
+            snprintf(headingBuf, sizeof(headingBuf), "%s%.*s", heading, dots, "...");
+            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 3.0f, (cardY + 100.0f) / 3.0f, headingBuf);
 
             SDL_SetRenderScale(_renderer, 1.5f, 1.5f);
-            SDL_SetRenderDrawColor(_renderer, 160, 174, 192, 255);
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 175.0f) / 1.5f, "Waiting for HDMI video input...");
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 210.0f) / 1.5f, "Audio output muted until video sync locks.");
+            SDL_SetRenderDrawColor(_renderer, 150, 164, 182, 255);
+            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 190.0f) / 1.5f, detail);
+            SDL_SetRenderDrawColor(_renderer, 105, 120, 140, 255);
+            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 220.0f) / 1.5f,
+                                "Audio is muted until video sync locks.");
         }
 
         SDL_SetRenderScale(_renderer, 1.0f, 1.0f);

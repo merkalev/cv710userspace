@@ -116,32 +116,63 @@ Run the userspace driver with the `-d` option:
 
 Open OBS Studio or your preferred streaming software, add a Video Capture Device (V4L2), and select `CV710 (/dev/video99)`.
 
-### Capturing the audio separately (virtual audio sink)
+### Keeping the audio off your desktop speakers
 
-V4L2 carries video only, so audio would otherwise play through your desktop
-speakers. To expose the captured 48 kHz stereo audio as its own source that OBS,
-Discord, etc. can record, create a virtual loopback sink and point the driver at
-it:
+V4L2 carries video only, so by default the captured 48 kHz stereo audio is
+played through SDL's default playback device (your desktop speakers). There are
+three ways to avoid that:
 
-```bash
-# Option A: ALSA loopback module
-sudo modprobe snd-aloop
+1. **`-g` — disable audio entirely** (simplest if you only want the picture):
+   ```bash
+   ./build/src/cli/cv710userspace -d /dev/video99 -g
+   ```
+   No audio is opened at all: nothing plays on the desktop, and there is no
+   audio to record either.
 
-# Option B: PipeWire (module-loopback / a null sink named e.g. "CV710_Audio")
-pw-loopback --name CV710_Audio
-```
+2. **`--audio-loopback` — route audio into a virtual sink** so OBS/Discord can
+   record it as a separate source (recommended for webcam use):
+   ```bash
+   # Option A: ALSA loopback module
+   sudo modprobe snd-aloop
 
-List what SDL can see, then run with `--audio-loopback` (or an explicit device):
+   # Option B: PipeWire (a null sink / loopback named e.g. "CV710_Audio")
+   pw-loopback --name CV710_Audio
+   ```
+   Then run with the flag (it makes the loopback **required** — if none is
+   found the driver errors out instead of falling back to the speakers):
+   ```bash
+   ./build/src/cli/cv710userspace -d /dev/video99 --audio-loopback
+   ```
 
-```bash
-./build/src/cli/cv710userspace -d /dev/video99 --list-audio-devices
-./build/src/cli/cv710userspace -d /dev/video99 --audio-loopback
-```
+3. **`--audio-device NAME|INDEX` — point at an explicit device**, e.g. a null
+   sink or a specific capture endpoint:
+   ```bash
+   ./build/src/cli/cv710userspace -d /dev/video99 --audio-device "Loopback"
+   ```
 
-When `-d` is used the driver automatically *prefers* a loopback sink if one is
-present, falling back to the desktop default otherwise. Select the capture side
-of that sink (e.g. "Monitor of …" / the loopback's capture device) in your
-recording software.
+> **Why does it play on the desktop at all?** When `-d` is used the driver only
+> *prefers* a loopback sink: if no `snd-aloop`/`loopback` device is present in
+> SDL's device list it falls back to the desktop default (with a hint in the
+> log) so audio isn't just dropped. `--audio-loopback` upgrades that preference
+> to a hard requirement. Check what SDL sees with:
+> ```bash
+> ./build/src/cli/cv710userspace --list-audio-devices
+> ```
+> Loopback devices are marked ` <-- loopback (capturable)`.
+
+### Capturing the audio in OBS / Discord
+
+Add an audio input in your recording software pointed at the **capture side** of
+the sink, not the monitor you'd hear yourself through:
+
+* **snd-aloop**: add an "Audio Input Capture", source type ALSA, device
+  `Loopback: Loopback PCM` (the `hw:X,1` capture subdevice).
+* **PipeWire (`pw-loopback` / `CV710_Audio`)**: select the device's
+  **Monitor** input (e.g. `Monitor of CV710_Audio`), or use `pavucontrol` to
+  route the sink's monitor stream to your app.
+
+Video and audio then arrive as two independent sources — video from
+`/dev/video99` (V4L2), audio from the loopback monitor.
 
 ## Protocol Documentation
 Technical details on the USB bulk streaming protocol, packet framing markers, FPGA checksum validation, and audio format are documented in [PROTOCOL.md](PROTOCOL.md). Known hardware limitations are tracked in [ISSUES.md](ISSUES.md).

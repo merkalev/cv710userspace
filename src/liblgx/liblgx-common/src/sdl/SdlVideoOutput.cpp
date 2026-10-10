@@ -574,7 +574,7 @@ namespace sdl {
             _signalReadySince = std::chrono::steady_clock::time_point{};
         }
         const bool settled = signalReady &&
-            (now - _signalReadySince) >= std::chrono::milliseconds(300);
+            (now - _signalReadySince) >= std::chrono::milliseconds(200);
 
         // Safety valve: if the status channel never validates but frames keep
         // arriving, never hide the preview permanently.

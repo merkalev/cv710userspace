@@ -434,7 +434,7 @@ Credit: This work builds upon the pioneering research and userspace driver found
 ### Resolution
 - The standby screen is now held until the receiver reports a **valid, locked** signal
   with known geometry (`valid && locked && activeWidth > 0`) for a short settle period
-  (~300 ms). Transitional/free-run frames are masked behind it.
+  (~200 ms). Transitional/free-run frames are masked behind it.
 - A 3 s safety valve shows the preview anyway if the status channel never validates, so
   the screen can never be permanently stuck.
 - The first live frame is cross-faded in (CV-18b) instead of popping.

@@ -592,44 +592,61 @@ Credit: This work builds upon the pioneering research and userspace driver found
    never cleared, so once the FPGA/FX3 FIFO alignment or the parser state got
    stuck (the only-replug-clears case), no code path could recover.
 
-### Resolution (CV-23)
+### Resolution (CV-23 / CV-23b)
 - **Exact-size gate at presentation.** A frame/field whose word count differs
   from the locked geometry is now dropped (counted, rate-limited log) instead of
   padded/truncated and presented. A skipped frame is invisible next to a skewed
   one, and the next genuine C0 re-anchors the raster. Applies to progressive
   frames (`frameWords == mode.targetWords`) and interlaced fields
-  (`frameWords == strideWords * fieldLines`).
-- **Automatic software replug.** After 60 consecutive un-presentable frames
-  while the ADV7604 reports a *locked* geometry (≈1 s), the parser runs
-  `reassertStream()`: it toggles the FPGA stream-enable bit off and on (the same
-  registers the shutdown/start paths use) and re-enters the C0 lock hunt — a
-  replug without touching the cable.
-- **Manual re-sync key.** `R` runs the same software replug on demand.
-- **CV-23a: no FX3 DMA reset mid-stream.** The first field test of the replug
-  showed that `sendResetStreamDma()` (the FX3 `0x14` command) issued while the
-  stream is *live* kills the whole EP1 control path: ADV7604 I2C status reads
-  immediately start failing (`Status query failed … keeping last known good
-  values`), no new frames ever present, and the app sits on the standby "NO
-  SIGNAL" BMP until restarted. The `0x14` DMA reset is therefore used only at
-  stream start (where it is proven safe); a re-sync re-arms the FPGA with the
-  stream-enable toggle instead, which is a plain I2C transaction that cannot
-  disrupt the control path.
-- `Device::reassertStream()` also resets weave/parity audio mute state so the
-  next lock starts clean; the ADV7604 register config and EDID are deliberately
-  left untouched (CV-15 state-preserving design).
+  (`frameWords == strideWords * fieldLines`). This alone kills the visible skew
+  class of this bug: a corrupt frame can no longer be presented.
+- **CV-23b: re-sync is parser-only.** `reassertStream()` re-anchors every
+  parser state on the next genuine C0 (lock hunt, weave/parity/audio-mute
+  cleared) and writes **nothing** to the FPGA or FX3. Both hardware resets were
+  field-tested mid-stream and are destructive:
+  - **CV-23a: FX3 DMA reset (`0x14`) kills the EP1 control path.** Issued while
+    the stream is live, `sendResetStreamDma()` makes ADV7604 I2C status reads
+    start failing (`Status query failed … keeping last known good values`), no
+    new frames ever present, and the app sits on the standby "NO SIGNAL" BMP
+    until restarted. It is used only at stream start/stop where it is proven
+    safe.
+  - **CV-23c: the FPGA stream-enable toggle corrupts the emitted frames.** A
+    mid-stream `setFpgaIdle()` → `setFpgaWork()` shifts every emitted frame
+    ~8192 words short of the locked geometry (multiple of 8192, growing with
+    each toggle) and can flip the FPGA into interlaced emission (C0 `b2=0x81`);
+    repeated re-syncs compound it and it is not recoverable in software.
+- **Automatic parser re-anchor (capped).** After 60 consecutive un-presentable
+  frames while the ADV7604 reports a *locked* geometry (≈1 s), the parser
+  re-anchors itself — at most **2 attempts per stuck episode** (a valid frame
+  resets the episode). If the stream is still corrupt after two re-anchors, the
+  log says so and recommends a physical replug instead of looping forever (the
+  loop the old software replug got stuck in).
+- **Manual re-sync key.** `R` runs the same parser re-anchor on demand — safe to
+  press any time, including during clean streaming (it cannot corrupt a healthy
+  stream; it re-locks on the next genuine C0).
+- The ADV7604 register config and EDID are deliberately left untouched
+  (CV-15 state-preserving design).
 
 ### Verification
 - New `device_parser_test` (Catch2) feeds synthetic 1080p frames through
   `Device::onFrameData`:
   - exact-size frame presented, off-by-one frame dropped (never presented),
     next clean frame presented again;
-  - 60 consecutive corrupt frames with a locked receiver fire the software
-    replug exactly once, the streak resets, and a clean frame presents
-    afterwards. 83 assertions across 2 cases, all passing.
-- **Field test of the as-shipped CV-23 replug (2026-10-10).** Pressing `R` while
-  streaming produced, in order: `Capture pipeline re-asserted`, USB backlog
-  warnings, one C0 lock after a long hunt, then `ADV7604 Status query failed
-  (…, N consecutive)` climbing — and no further `produceVideoData` ever logged.
-  This pinned the breakage on `sendResetStreamDma()` being issued mid-stream and
-  led to CV-23a above. Re-validation needed on hardware with the toggle-only
-  re-sync.
+  - 60 consecutive corrupt frames with a locked receiver auto re-anchor the
+    parser; a second 60-frame run re-anchors again; a third run is capped (no
+    third re-anchor) with the physical-replug advisory; a clean frame presents
+    and resets the episode, after which a fresh 60-frame run may re-anchor
+    again. 254 assertions across 2 cases, all passing.
+- **Field tests of the as-shipped CV-23 replug (2026-10-10):**
+  - *Replug attempt 1 (DMA reset):* pressing `R` while streaming produced
+    `Capture pipeline re-asserted`, USB backlog warnings, one C0 lock after a
+    long hunt, then `ADV7604 Status query failed (…, N consecutive)` climbing —
+    and no further `produceVideoData` ever logged. Pinned the breakage on
+    `sendResetStreamDma()` mid-stream → CV-23a.
+  - *Replug attempt 2 (FPGA toggle):* pressing `R` while streaming clean
+    (61.4 fps, exact 1036800-word frames) permanently corrupted the stream — a
+    growing multiple-of-8192-word shortfall with every toggle (1028608,
+    1020416, 1012224, 1004032), C0 flags flipping to interlaced (`b2=0x81`
+    / seq `0x3e`), and the auto-replug loop (#1→#8) compounding it, until ^C.
+    Led to CV-23b/c: no hardware writes on re-sync. A physical replug remains
+    the only cure for FPGA-side stuck state.

@@ -3,9 +3,10 @@
 // A frame whose word count differs from the locked geometry is corrupt by
 // construction - a single word lost/duplicated mid-frame shifts every
 // following scanline by 1 word (2 px). The parser must DROP such frames
-// instead of padding/presenting them, and must automatically perform a
-// software replug (resetStreamPipeline -> FPGA stream-enable toggle; the
-// FX3 DMA reset is deliberately NOT used mid-stream, see CV-23a)
+// instead of padding/presenting them, and must automatically re-anchor the
+// parser (CV-23b: parser-only; mid-stream FPGA/FX3 writes were field-tested
+// and are destructive) when a persistent corrupt streak builds up while the
+// receiver is locked - capped at kMaxAutoResyncs per stuck episode.
 // when a persistent corrupt streak builds up while the receiver is locked.
 
 #include "catch_amalgamated.hpp"
@@ -61,7 +62,6 @@ std::vector<uint32_t> makeFrame(uint32_t seq, uint32_t pixelWords) {
 class MockStream : public lgx2::Stream {
 public:
     lgx2::VideoSignalInfo sig{};
-    int resetPipelineCalls = 0;
     std::function<void(uint8_t *, uint32_t)> *cb = nullptr;
 
     bool deviceAvailable(lgx2::DeviceType) override { return true; }
@@ -70,7 +70,6 @@ public:
     void update() override {}
     void shutdownStream() override {}
     lgx2::VideoSignalInfo getVideoSignalInfo() const override { return sig; }
-    void resetStreamPipeline() override { resetPipelineCalls++; }
 
     void call(const std::vector<uint32_t> &frame) {
         REQUIRE(cb != nullptr);
@@ -133,7 +132,7 @@ TEST_CASE("CV-23: exact-size locked frame is presented, corrupt frame is dropped
     REQUIRE(vo.frames == 2);
 }
 
-TEST_CASE("CV-23: persistent corrupt stream triggers automatic software replug once", "[parser]") {
+TEST_CASE("CV-23b: persistent corrupt stream auto re-anchors the parser, capped per episode", "[parser]") {
     MockStream stream;
     stream.sig.locked = true;
     stream.sig.activeWidth = 1920;
@@ -144,22 +143,33 @@ TEST_CASE("CV-23: persistent corrupt stream triggers automatic software replug o
     lgx2::Device device{&stream, &vo, &ao, nullptr, &sink};
     device.initialise(lgx2::DeviceType::CV710, lgx2::VideoScale::Full);
 
-    // 60 consecutive off-by-one frames while the receiver is locked => stuck.
+    // Phase A: 60 consecutive off-by-one frames while the receiver is locked
+    // => the parser auto re-anchors once (never presents a corrupt frame).
     for (uint32_t s = 1; s <= 60; s++) {
         stream.call(makeFrame(s, k1080P_WORDS - 1));
     }
-    REQUIRE(stream.resetPipelineCalls == 1);
-    REQUIRE(vo.frames == 0); // never presented a corrupt frame
+    REQUIRE(device.autoResyncCount() == 1);
+    REQUIRE(vo.frames == 0);
 
-    // After the re-assert the parser re-locks on the next genuine C0 and the
-    // streak starts over - no immediate re-trigger for a fresh short run.
-    for (uint32_t s = 61; s <= 70; s++) {
+    // Phase B: the streak rebuilds (the re-anchor reset it) - one more attempt.
+    for (uint32_t s = 61; s <= 120; s++) {
         stream.call(makeFrame(s, k1080P_WORDS - 1));
     }
-    REQUIRE(stream.resetPipelineCalls == 1);
+    REQUIRE(device.autoResyncCount() == 2);
 
-    // A clean frame presents again.
-    stream.call(makeFrame(71, k1080P_WORDS));
-    REQUIRE(stream.resetPipelineCalls == 1);
+    // Phase C: still no valid frame - the per-episode cap holds; it must not
+    // loop forever (this is the loop the old software replug got stuck in).
+    for (uint32_t s = 121; s <= 180; s++) {
+        stream.call(makeFrame(s, k1080P_WORDS - 1));
+    }
+    REQUIRE(device.autoResyncCount() == 2);
+
+    // Phase D: a clean frame presents and ends the stuck episode; a fresh
+    // 60-frame corrupt run is allowed to re-anchor again.
+    stream.call(makeFrame(181, k1080P_WORDS));
     REQUIRE(vo.frames == 1);
+    for (uint32_t s = 182; s <= 241; s++) {
+        stream.call(makeFrame(s, k1080P_WORDS - 1));
+    }
+    REQUIRE(device.autoResyncCount() == 3);
 }

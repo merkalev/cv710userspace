@@ -647,6 +647,7 @@ namespace lgx2 {
         auto now = std::chrono::steady_clock::now();
         _lastValidVideoTime = now;
         _consecutiveValidFrames++;
+        _autoResyncsThisEpisode = 0; // CV-23b: a valid frame ends any stuck episode
         if (_consecutiveValidFrames >= 2) {
             _audioMuted = false;
         }
@@ -686,20 +687,20 @@ namespace lgx2 {
 
     void Device::reassertStream() {
         _autoResyncCount++;
-        if (_stream) {
-            // CV-23a: software replug = toggle the FPGA stream-enable bit off/on
-            // (the registers shutdownStream/queueFrameRead already use) rather than
-            // the FX3 DMA reset (0x14). The 0x14 command is only safe at stream
-            // start: issued mid-stream it kills the EP1 control path - ADV7604 I2C
-            // status reads fail and bulk streaming never resumes, leaving the app
-            // stuck on the standby BMP. The FPGA toggle re-arms frame generation
-            // with no risk to the control path.
-            _stream->resetStreamPipeline();
-        }
+        _autoResyncsThisEpisode++;
+        // CV-23b: parser-only re-anchor. NO FPGA/FX3 writes: the FX3 DMA reset
+        // (0x14) issued mid-stream kills the EP1 control path (ADV7604 I2C status
+        // reads start failing and bulk streaming never resumes), and toggling the
+        // FPGA stream-enable bit shifts every emitted frame ~8192 words short (and
+        // can flip the FPGA into interlaced emission) - neither is recoverable
+        // without a physical replug, and both corrupt a healthy stream if pressed
+        // while it is clean. The exact-size gate already prevents any corrupted
+        // frame from being presented, so re-anchoring the parser on the next
+        // genuine C0 is the complete software remedy for marker alignment.
 
         // Re-anchor every parser state on the next genuine C0. Frames buffered
-        // before the reset are stale garbage; the lock hunt below discards
-        // everything until a fresh, valid C0 header arrives.
+        // before the re-sync may straddle the marker grid; the lock hunt below
+        // discards everything until a fresh, valid C0 header arrives.
         _streamLocked = false;
         _inVideo = false;
         _inAudio = false;
@@ -718,8 +719,15 @@ namespace lgx2 {
         _audioMuted = true;
         _skewRun = 0;
         _c0HuntCount = 0;
-        printf("[Device] Capture pipeline re-asserted (software replug #%u) - waiting for the next C0 lock\n",
-               _autoResyncCount);
+        if (_autoResyncsThisEpisode <= kMaxAutoResyncs) {
+            printf("[Device] Re-sync %u: parser re-anchored on the next C0 (no FPGA/FX3 writes)\n",
+                   _autoResyncCount);
+        } else {
+            printf("[Device] Re-sync %u: parser re-anchored on the next C0\n"
+                   "         (no FPGA/FX3 writes - mid-stream hardware resets corrupt the stream; "
+                   "a physical replug is the only hardware-side fix)\n",
+                   _autoResyncCount);
+        }
         fflush(stdout);
     }
 
@@ -736,17 +744,28 @@ namespace lgx2 {
 
         // A persistent run of un-presentable frames while the receiver reports a
         // *locked* signal means the capture pipeline itself is stuck (FPGA/FX3
-        // FIFO pointers or the HDMI receiver) - the state that previously only a
-        // physical replug could clear. Fire the software replug automatically.
+        // or marker alignment) - the state that previously only a physical
+        // replug could clear. Re-anchor the parser (CV-23b: parser-only), but
+        // capped per episode: two re-anchors without a single valid frame in
+        // between means the stale state is not marker alignment, no software
+        // re-sync can help, and a physical replug is the only remaining cure.
         lgx2::VideoSignalInfo sig{};
         if (_stream) {
             sig = _stream->getVideoSignalInfo();
         }
         if (_skewRun >= kCorruptFramesBeforeAutoResync && sig.locked && sig.activeWidth > 0 && _streamLocked) {
-            printf("[Video] Capture pipeline corrupt for %u consecutive frames while receiver is locked - "
-                   "automatic re-sync (software replug)\n", _skewRun);
-            fflush(stdout);
-            reassertStream();
+            if (_autoResyncsThisEpisode < kMaxAutoResyncs) {
+                printf("[Video] Capture pipeline corrupt for %u consecutive frames while receiver is locked - "
+                       "automatic parser re-sync\n", _skewRun);
+                fflush(stdout);
+                reassertStream();
+            } else if (_autoResyncsThisEpisode == kMaxAutoResyncs) {
+                printf("[Video] Capture pipeline stays corrupt after %u parser re-syncs while receiver is locked - "
+                       "this is not a marker-alignment issue. A physical replug of the capture device is required.\n",
+                       kMaxAutoResyncs);
+                fflush(stdout);
+                _autoResyncsThisEpisode++; // log the advisory once, then stay quiet this episode
+            }
         }
     }
 

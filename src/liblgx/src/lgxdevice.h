@@ -80,10 +80,6 @@ namespace lgx2 {
         virtual void queryVideoSignalStatus() {}
         virtual void setVideoStandard(uint8_t std) { (void)std; }
         virtual VideoSignalInfo getVideoSignalInfo() const { return {}; }
-        // CV-23: software replug - reset the FX3 stream DMA (clears its internal
-        // FIFO pointers) and re-assert the FPGA streaming bit without
-        // re-enumerating the USB device.
-        virtual void resetStreamPipeline() {}
     };
 
     enum class VideoScale {
@@ -159,12 +155,19 @@ namespace lgx2 {
                 _stream->setVideoStandard(std);
             }
         }
-        // CV-23: a software replug - reset the FX3 stream DMA (clears its
-        // internal FIFO pointers), re-assert the FPGA streaming bit, and
-        // re-anchor the parser on the next genuine C0. Clears a persistently
-        // skewed / misaligned picture without unplugging the cable or
-        // restarting the app. Mapped to the R key and fired automatically when
-        // the stream stays corrupt while the receiver reports a locked signal.
+        // CV-23/23b: a software re-sync - re-anchors the parser on the next
+        // genuine C0 (lock hunt) and clears every piece of parser state (weave,
+        // parity, audio mute) so the next lock starts clean. It writes NOTHING
+        // to the FPGA or FX3: both mid-stream hardware resets were field-tested
+        // and are destructive - the FX3 DMA reset (0x14) kills the EP1 control
+        // path (ADV7604 I2C reads fail, streaming never resumes) and toggling
+        // the FPGA stream-enable bit corrupts the emitted frame stream (each
+        // toggle shifts the frame total ~8192 words short and can flip the FPGA
+        // into interlaced emission), neither recoverable without a physical
+        // replug. Mapped to the R key and fired automatically (capped per
+        // episode) when the stream stays corrupt while the receiver reports a
+        // locked signal.
+        uint32_t autoResyncCount() const { return _autoResyncCount; }
         void reassertStream();
 
     private:
@@ -225,12 +228,18 @@ namespace lgx2 {
         uint32_t _receiverMismatchDrops{0};
         // CV-23: consecutive un-presentable frames (locked-mode size mismatch or
         // invalid field size) while the receiver reports a locked signal. After
-        // kCorruptFramesBeforeAutoResync of them the pipeline is presumed stuck
-        // and reassertStream() runs automatically (a software replug).
+        // kCorruptFramesBeforeAutoResync of them the parser is presumed stuck and
+        // reassertStream() re-anchors it (CV-23b: parser-only, capped at
+        // kMaxAutoResyncs per stuck episode).
         uint32_t _skewRun{0};
         uint32_t _skewLogCount{0};
         uint32_t _autoResyncCount{0};
+        uint32_t _autoResyncsThisEpisode{0};
         static constexpr uint32_t kCorruptFramesBeforeAutoResync = 60;
+        // CV-23b: after this many parser re-anchors in one stuck episode (no
+        // valid frame in between) give up and tell the user a physical replug is
+        // the only remaining cure, instead of looping forever.
+        static constexpr uint32_t kMaxAutoResyncs = 2;
 
         // Resolution stability hysteresis
         uint32_t _activeWidth{1920};
@@ -277,10 +286,10 @@ namespace lgx2 {
         // CV-01: hold back words starting at `start` for the next transfer
         void holdWordsForNextTransfer(const uint32_t *words, uint32_t count, uint32_t start);
 
-        // CV-23: drop a frame/field whose word count contradicts the locked
+        // CV-23/23b: drop a frame/field whose word count contradicts the locked
         // geometry (presenting it would put a row-stride "skewed lines" seam in
-        // the picture), count it, and arms the automatic software replug once a
-        // persistent corrupt streak builds up.
+        // the picture), count it, and arms the automatic parser re-anchor (capped
+        // per episode) once a persistent corrupt streak builds up.
         void noteCorruptFrame(uint32_t frameWords, const char *modeName, const char *reason);
 
         void produceVideoData(uint32_t frameSize, uint32_t width, uint32_t height, uint8_t *data);

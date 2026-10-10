@@ -39,19 +39,6 @@ namespace libusb {
         void setFastBootstrap(bool fast) override { _fastBootstrap = fast; }
         void queryVideoSignalStatus() override;
         void setVideoStandard(uint8_t std) override;
-        void resetStreamPipeline() override {
-            // CV-23a: mid-stream re-arm must NOT use sendResetStreamDma() (0x14).
-            // Field test showed the FX3 DMA reset kills the whole EP1 control path
-            // when issued while the stream is live: ADV7604 I2C status reads start
-            // failing with "keeping last known good values", bulk streaming never
-            // resumes, and the app hangs on the standby BMP until restart.
-            // Toggling the FPGA stream-enable bit (the same registers the
-            // shutdown/start paths use) re-arms the FPGA's frame generation and is
-            // a plain I2C transaction - safe mid-stream. The parser re-anchors on
-            // the next C0, which clears any word-loss alignment state.
-            setFpgaIdle();
-            setFpgaWork();
-        }
         void setFpgaIdle();
         void setFpgaWork();
         bool sendResetStreamDma();

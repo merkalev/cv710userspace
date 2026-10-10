@@ -51,6 +51,7 @@ namespace sdl {
         void updateWindowTitle();
         void renderSplashScreen();
         void renderDiagnosticHud(uint8_t alpha);
+        void renderToast(uint8_t alpha);
         void updateTextureFormat();
         void loadSplashBitmaps();
         void convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int srcWidth, int dstWidth, int dstHeight, int step);
@@ -93,6 +94,7 @@ namespace sdl {
         bool _hudPersistent{false};
         std::chrono::steady_clock::time_point _osdTimestamp{};
         bool _showOsd{false};
+        std::string _toastText{};
 
         lgx2::DisplayMetrics _metrics{};
     };

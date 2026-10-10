@@ -2,11 +2,18 @@
 
 #include <SDL3/SDL.h>
 #include <cstdio>
+#include <cstring>
+#include <cmath>
 #include <stdexcept>
 #include <vector>
 #include <string>
 #include <algorithm>
 #include <thread>
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#define CV710_HAVE_X86_SIMD 1
+#endif
 
 namespace sdl {
 
@@ -245,11 +252,129 @@ namespace sdl {
                 updateWindowTitle();
                 _showOsd = true;
                 _osdTimestamp = std::chrono::steady_clock::now();
+                _toastText = std::string("Color: ") + colorspaceShortName(_colorspaceMode) + " (Auto)";
                 printf("[Video] Auto-selected colorspace from AVI InfoFrame: %s (%s)\n",
                        colorspaceName(_colorspaceMode),
                        autoColorspaceSourceLabel(metrics.signalInfo.aviColorspace));
                 fflush(stdout);
             }
+        }
+    }
+
+    namespace {
+#if defined(CV710_HAVE_X86_SIMD)
+        // AVX2 YUY2 -> RGBA32 row converter for step == 1, non-swapped chroma.
+        // Bit-for-bit identical to the scalar path in convertYuy2ToRgba, including
+        // the CV-09 co-sited chroma reconstruction. 8 macropixels per iteration.
+        __attribute__((target("avx2")))
+        void convertRowAvx2(const uint32_t *srcRow, uint32_t *dstRow, int pairs,
+                            int cY, int cRV, int cGU, int cGV, int cBU, int y_off) {
+            const __m256i maskFF  = _mm256_set1_epi32(0xFF);
+            const __m256i bias128 = _mm256_set1_epi32(128);
+            const __m256i one     = _mm256_set1_epi32(1);
+            const __m256i round   = _mm256_set1_epi32(32768);
+            const __m256i zero    = _mm256_setzero_si256();
+            const __m256i c255    = _mm256_set1_epi32(255);
+            const __m256i alpha   = _mm256_set1_epi32(static_cast<int>(0xFF000000u));
+            const __m256i cy  = _mm256_set1_epi32(cY);
+            const __m256i crv = _mm256_set1_epi32(cRV);
+            const __m256i cgu = _mm256_set1_epi32(cGU);
+            const __m256i cgv = _mm256_set1_epi32(cGV);
+            const __m256i cbu = _mm256_set1_epi32(cBU);
+            const __m256i yoff = _mm256_set1_epi32(y_off);
+            const __m256i nxt = _mm256_setr_epi32(1, 2, 3, 4, 5, 6, 7, 7);
+
+            int x = 0;
+            for (; x + 8 <= pairs; x += 8) {
+                __m256i word = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(srcRow + x));
+                __m256i y0 = _mm256_and_si256(word, maskFF);
+                __m256i u  = _mm256_and_si256(_mm256_srli_epi32(word, 8), maskFF);
+                __m256i y1 = _mm256_and_si256(_mm256_srli_epi32(word, 16), maskFF);
+                __m256i v  = _mm256_srli_epi32(word, 24);
+
+                __m256i uN = _mm256_permutevar8x32_epi32(u, nxt);
+                __m256i vN = _mm256_permutevar8x32_epi32(v, nxt);
+                // Lane 7's neighbour lives outside this vector: patch it from the
+                // following word, or leave it self-referential at the row end.
+                if (x + 8 < pairs) {
+                    uint32_t nw = srcRow[x + 8];
+                    uN = _mm256_insert_epi32(uN, static_cast<int>((nw >> 8) & 0xFF), 7);
+                    vN = _mm256_insert_epi32(vN, static_cast<int>((nw >> 24) & 0xFF), 7);
+                }
+
+                __m256i uv = _mm256_sub_epi32(u, bias128);
+                __m256i vv = _mm256_sub_epi32(v, bias128);
+                __m256i uOdd = _mm256_sub_epi32(_mm256_srli_epi32(_mm256_add_epi32(_mm256_add_epi32(u, uN), one), 1), bias128);
+                __m256i vOdd = _mm256_sub_epi32(_mm256_srli_epi32(_mm256_add_epi32(_mm256_add_epi32(v, vN), one), 1), bias128);
+
+                __m256i rOff  = _mm256_mullo_epi32(crv, vv);
+                __m256i gOff  = _mm256_sub_epi32(zero, _mm256_add_epi32(_mm256_mullo_epi32(cgu, uv), _mm256_mullo_epi32(cgv, vv)));
+                __m256i bOff  = _mm256_mullo_epi32(cbu, uv);
+                __m256i rOff1 = _mm256_mullo_epi32(crv, vOdd);
+                __m256i gOff1 = _mm256_sub_epi32(zero, _mm256_add_epi32(_mm256_mullo_epi32(cgu, uOdd), _mm256_mullo_epi32(cgv, vOdd)));
+                __m256i bOff1 = _mm256_mullo_epi32(cbu, uOdd);
+
+                __m256i y0s = _mm256_add_epi32(_mm256_mullo_epi32(cy, _mm256_sub_epi32(y0, yoff)), round);
+                __m256i y1s = _mm256_add_epi32(_mm256_mullo_epi32(cy, _mm256_sub_epi32(y1, yoff)), round);
+
+                __m256i r0 = _mm256_min_epi32(_mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y0s, rOff), 16), zero), c255);
+                __m256i g0 = _mm256_min_epi32(_mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y0s, gOff), 16), zero), c255);
+                __m256i b0 = _mm256_min_epi32(_mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y0s, bOff), 16), zero), c255);
+                __m256i r1 = _mm256_min_epi32(_mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y1s, rOff1), 16), zero), c255);
+                __m256i g1 = _mm256_min_epi32(_mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y1s, gOff1), 16), zero), c255);
+                __m256i b1 = _mm256_min_epi32(_mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y1s, bOff1), 16), zero), c255);
+
+                __m256i ev = _mm256_or_si256(alpha,
+                             _mm256_or_si256(_mm256_slli_epi32(b0, 16),
+                             _mm256_or_si256(_mm256_slli_epi32(g0, 8), r0)));
+                __m256i od = _mm256_or_si256(alpha,
+                             _mm256_or_si256(_mm256_slli_epi32(b1, 16),
+                             _mm256_or_si256(_mm256_slli_epi32(g1, 8), r1)));
+
+                __m256i lo = _mm256_unpacklo_epi32(ev, od);
+                __m256i hi = _mm256_unpackhi_epi32(ev, od);
+                __m256i o0 = _mm256_permute2x128_si256(lo, hi, 0x20);
+                __m256i o1 = _mm256_permute2x128_si256(lo, hi, 0x31);
+                _mm256_storeu_si256(reinterpret_cast<__m256i *>(dstRow + x * 2), o0);
+                _mm256_storeu_si256(reinterpret_cast<__m256i *>(dstRow + x * 2 + 8), o1);
+            }
+
+            // Scalar tail: replicate the co-sited neighbour lookup for the final
+            // macropixel(s) not covered by a full vector.
+            for (; x < pairs; x++) {
+                uint32_t word = srcRow[x];
+                uint8_t y0 = word & 0xFF;
+                uint8_t u  = (word >> 8) & 0xFF;
+                uint8_t y1 = (word >> 16) & 0xFF;
+                uint8_t v  = (word >> 24) & 0xFF;
+                uint8_t uNext = u, vNext = v;
+                if (x + 1 < pairs) {
+                    uint32_t nw = srcRow[x + 1];
+                    uNext = (nw >> 8) & 0xFF;
+                    vNext = (nw >> 24) & 0xFF;
+                }
+                int u_val = static_cast<int>(u) - 128;
+                int v_val = static_cast<int>(v) - 128;
+                int u_valOdd = (static_cast<int>(u) + static_cast<int>(uNext) + 1) / 2 - 128;
+                int v_valOdd = (static_cast<int>(v) + static_cast<int>(vNext) + 1) / 2 - 128;
+                int r_off = cRV * v_val, g_off = -(cGU * u_val + cGV * v_val), b_off = cBU * u_val;
+                int r_off1 = cRV * v_valOdd, g_off1 = -(cGU * u_valOdd + cGV * v_valOdd), b_off1 = cBU * u_valOdd;
+                int y0s = cY * (static_cast<int>(y0) - y_off) + 32768;
+                int y1s = cY * (static_cast<int>(y1) - y_off) + 32768;
+                uint8_t r0 = clamp8((y0s + r_off) >> 16), g0 = clamp8((y0s + g_off) >> 16), b0 = clamp8((y0s + b_off) >> 16);
+                uint8_t r1 = clamp8((y1s + r_off1) >> 16), g1 = clamp8((y1s + g_off1) >> 16), b1 = clamp8((y1s + b_off1) >> 16);
+                dstRow[x * 2]     = 0xFF000000u | (static_cast<uint32_t>(b0) << 16) | (static_cast<uint32_t>(g0) << 8) | r0;
+                dstRow[x * 2 + 1] = 0xFF000000u | (static_cast<uint32_t>(b1) << 16) | (static_cast<uint32_t>(g1) << 8) | r1;
+            }
+        }
+#endif
+
+        bool avx2Available() {
+#if defined(CV710_HAVE_X86_SIMD)
+            return __builtin_cpu_supports("avx2");
+#else
+            return false;
+#endif
         }
     }
 
@@ -299,10 +424,19 @@ namespace sdl {
         const int pairsPerDstRow = dstWidth / 2;
         const int srcStrideWords = srcWidth / 2;
 
+        const bool useAvx2 = (step == 1) && !swapChroma && avx2Available();
+
         auto processRows = [&](int y_start, int y_end) {
             for (int y = y_start; y < y_end; y++) {
                 const uint32_t *srcRow = src + (y * step) * srcStrideWords;
                 uint32_t *dstRow = dst + y * dstWidth;
+
+                if (useAvx2) {
+#if defined(CV710_HAVE_X86_SIMD)
+                    convertRowAvx2(srcRow, dstRow, pairsPerDstRow, cY, cRV, cGU, cGV, cBU, y_off);
+                    continue;
+#endif
+                }
 
                 for (int x = 0; x < pairsPerDstRow; x++) {
                     uint32_t word = srcRow[x * step];
@@ -425,6 +559,10 @@ namespace sdl {
             }
             updateTextureFormat();
             updateWindowTitle();
+            char toastBuf[64];
+            snprintf(toastBuf, sizeof(toastBuf), "%dx%d%s", _srcWidth, _srcHeight,
+                     _metrics.signalInfo.interlaced ? "i" : "p");
+            _toastText = toastBuf;
             _showOsd = true;
             _osdTimestamp = _lastFrameTime;
         }
@@ -494,6 +632,7 @@ namespace sdl {
                     _hudPersistent = !_hudPersistent;
                     _showOsd = true;
                     _osdTimestamp = now;
+                    _toastText = _hudPersistent ? "Diagnostic HUD on" : "Diagnostic HUD off";
                     printf("[Video] Diagnostic HUD: %s\n", _hudPersistent ? "ON" : "OFF");
                     fflush(stdout);
                 }
@@ -527,6 +666,8 @@ namespace sdl {
                     updateWindowTitle();
                     _showOsd = true;
                     _osdTimestamp = now;
+                    _toastText = std::string("Color: ") + colorspaceShortName(_colorspaceMode) +
+                                 (_colorspaceUserOverride ? " (Manual)" : " (Auto)");
 
                     if (!_colorspaceUserOverride) {
                         printf("[Video] Switched colorspace to: Auto (HDMI InfoFrame: %s)\n", colorspaceName(_colorspaceMode));
@@ -540,18 +681,23 @@ namespace sdl {
             }
         }
 
+        // Persistent diagnostic HUD (Tab/O): fully opaque while enabled.
         uint8_t hudAlpha = 0;
         if (_hudPersistent) {
             hudAlpha = 255;
-        } else if (_showOsd) {
+        }
+
+        // Transient toast (mode/resolution changes): fades in/out on its own.
+        uint8_t toastAlpha = 0;
+        if (_showOsd) {
             auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - _osdTimestamp).count();
             if (elapsedMs < 2500) {
                 if (elapsedMs <= 1800) {
-                    hudAlpha = 255;
+                    toastAlpha = 255;
                 } else {
                     float fade = 1.0f - static_cast<float>(elapsedMs - 1800) / 700.0f;
                     if (fade < 0.0f) fade = 0.0f;
-                    hudAlpha = static_cast<uint8_t>(255.0f * fade);
+                    toastAlpha = static_cast<uint8_t>(255.0f * fade);
                 }
             } else {
                 _showOsd = false;
@@ -599,6 +745,9 @@ namespace sdl {
                 if (hudAlpha > 0) {
                     renderDiagnosticHud(hudAlpha);
                 }
+                if (toastAlpha > 0) {
+                    renderToast(toastAlpha);
+                }
                 SDL_RenderPresent(_renderer);
             }
             _wasShowingSplash = true;
@@ -614,7 +763,8 @@ namespace sdl {
         }
 
         bool shouldRender = _newFrameAvailable;
-        if (!shouldRender && hudAlpha > 0 && (now - _lastHudRender >= std::chrono::milliseconds(33))) {
+        if (!shouldRender && (hudAlpha > 0 || toastAlpha > 0) &&
+            (now - _lastHudRender >= std::chrono::milliseconds(33))) {
             shouldRender = true;
             _lastHudRender = now;
         }
@@ -644,9 +794,61 @@ namespace sdl {
             if (hudAlpha > 0) {
                 renderDiagnosticHud(hudAlpha);
             }
+            if (toastAlpha > 0) {
+                renderToast(toastAlpha);
+            }
 
             SDL_RenderPresent(_renderer);
             _newFrameAvailable = false;
+        }
+    }
+
+    namespace {
+        // Rounded-rectangle fill built from horizontal spans so it composites
+        // correctly with the renderer's alpha blending (SDL has no rounded-rect
+        // primitive).
+        void fillRoundRect(SDL_Renderer *r, float x, float y, float w, float h,
+                           float rad, uint8_t cr, uint8_t cg, uint8_t cb, uint8_t a) {
+            if (rad < 0.0f) rad = 0.0f;
+            if (rad * 2.0f > w) rad = w / 2.0f;
+            if (rad * 2.0f > h) rad = h / 2.0f;
+            SDL_SetRenderDrawColor(r, cr, cg, cb, a);
+            if (rad <= 0.0f) {
+                SDL_FRect rect{x, y, w, h};
+                SDL_RenderFillRect(r, &rect);
+                return;
+            }
+            SDL_FRect mid{x, y + rad, w, h - 2.0f * rad};
+            SDL_RenderFillRect(r, &mid);
+            SDL_FRect top{x + rad, y, w - 2.0f * rad, rad};
+            SDL_RenderFillRect(r, &top);
+            SDL_FRect bot{x + rad, y + h - rad, w - 2.0f * rad, rad};
+            SDL_RenderFillRect(r, &bot);
+            int steps = static_cast<int>(rad);
+            for (int i = 0; i < steps; i++) {
+                float dy = rad - static_cast<float>(i);
+                float inset = rad - std::sqrt(std::max(0.0f, rad * rad - dy * dy));
+                float span = rad - inset;
+                SDL_FRect l{x + inset, y + i, span, 1.0f};
+                SDL_FRect lb{x + inset, y + h - 1.0f - i, span, 1.0f};
+                SDL_FRect rr{x + w - rad, y + i, span, 1.0f};
+                SDL_FRect rb{x + w - rad, y + h - 1.0f - i, span, 1.0f};
+                SDL_RenderFillRect(r, &l);
+                SDL_RenderFillRect(r, &lb);
+                SDL_RenderFillRect(r, &rr);
+                SDL_RenderFillRect(r, &rb);
+            }
+        }
+
+        void accentForColorspace(ColorspaceMode m, uint8_t &r, uint8_t &g, uint8_t &b) {
+            switch (m) {
+                case ColorspaceMode::BT709_Full:    r = 255; g = 183; b = 3;   break; // amber
+                case ColorspaceMode::BT601_Limited: r = 6;   g = 214; b = 160; break; // emerald
+                case ColorspaceMode::BT601_Full:    r = 138; g = 201; b = 38;  break; // lime
+                case ColorspaceMode::UYVY_Swap:     r = 157; g = 78;  b = 221; break; // violet
+                case ColorspaceMode::Direct_YUY2:   r = 58;  g = 134; b = 255; break; // blue
+                default:                            r = 0;   g = 180; b = 216; break; // cyan
+            }
         }
     }
 
@@ -656,106 +858,151 @@ namespace sdl {
         int winW = 1920, winH = 1080;
         SDL_GetWindowSize(_window, &winW, &winH);
 
-        float cardW = 440.0f;
-        float cardH = 118.0f;
-        float cardX = static_cast<float>(winW) - cardW - 20.0f;
-        if (cardX < 10.0f) cardX = 10.0f;
-        float cardY = 20.0f;
+        SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
+
+        // Drawn in logical units at 2x so the built-in 8px font reads at 16px.
+        const float S = 2.0f;
+        SDL_SetRenderScale(_renderer, S, S);
+        const float W = static_cast<float>(winW) / S;
+
+        const float cardW = 328.0f;
+        const float cardH = 104.0f;
+        const float margin = 14.0f;
+        const float rad = 8.0f;
+        const float cardX = W - cardW - margin;
+        const float cardY = margin;
+
+        uint8_t accR, accG, accB;
+        accentForColorspace(_colorspaceMode, accR, accG, accB);
+
+        // Soft drop shadow.
+        fillRoundRect(_renderer, cardX + 4.0f, cardY + 5.0f, cardW, cardH, rad,
+                      0, 0, 0, static_cast<uint8_t>(alpha * 90 / 255));
+
+        // Frosted obsidian card body.
+        fillRoundRect(_renderer, cardX, cardY, cardW, cardH, rad,
+                      16, 20, 28, static_cast<uint8_t>(alpha * 236 / 255));
+
+        // Hairline border, top and bottom only (keeps the left/right clean).
+        SDL_SetRenderDrawColor(_renderer, 64, 78, 100, static_cast<uint8_t>(alpha * 170 / 255));
+        SDL_FRect borderTop{cardX + rad, cardY, cardW - 2.0f * rad, 1.0f};
+        SDL_FRect borderBot{cardX + rad, cardY + cardH - 1.0f, cardW - 2.0f * rad, 1.0f};
+        SDL_RenderFillRect(_renderer, &borderTop);
+        SDL_RenderFillRect(_renderer, &borderBot);
+
+        // Accent glow line along the top edge.
+        fillRoundRect(_renderer, cardX + rad, cardY, cardW - 2.0f * rad, 2.0f, 1.0f,
+                      accR, accG, accB, alpha);
+
+        // Header: accent dot + device title.
+        SDL_FRect dot{cardX + 14.0f, cardY + 12.0f, 6.0f, 6.0f};
+        SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);
+        SDL_RenderFillRect(_renderer, &dot);
+        SDL_SetRenderDrawColor(_renderer, 238, 244, 255, alpha);
+        SDL_RenderDebugText(_renderer, cardX + 26.0f, cardY + 11.0f, "AVerMedia CV710");
+
+        // Status pill (right side of the header).
+        const char *statusText;
+        uint8_t sr, sg, sb;
+        if (_metrics.signalInfo.valid && _metrics.signalInfo.locked) {
+            statusText = "LOCKED";    sr = 46;  sg = 200; sb = 96;
+        } else if (_metrics.signalInfo.valid) {
+            statusText = "NO SIGNAL"; sr = 235; sg = 150; sb = 40;
+        } else {
+            statusText = "LIVE";      sr = 0;   sg = 170; sb = 220;
+        }
+        float pillW = static_cast<float>(std::strlen(statusText)) * 8.0f + 14.0f;
+        const float pillH = 14.0f;
+        float pillX = cardX + cardW - 12.0f - pillW;
+        float pillY = cardY + 8.0f;
+        fillRoundRect(_renderer, pillX, pillY, pillW, pillH, pillH / 2.0f,
+                      sr, sg, sb, static_cast<uint8_t>(alpha * 235 / 255));
+        SDL_SetRenderDrawColor(_renderer, 10, 14, 20, alpha);
+        SDL_RenderDebugText(_renderer, pillX + 7.0f, pillY + 3.0f, statusText);
+
+        // Divider under the header.
+        SDL_SetRenderDrawColor(_renderer, 52, 64, 82, static_cast<uint8_t>(alpha * 170 / 255));
+        SDL_FRect divider{cardX + 12.0f, cardY + 26.0f, cardW - 24.0f, 1.0f};
+        SDL_RenderFillRect(_renderer, &divider);
+
+        // Rows: dim label, bright value.
+        char inBuf[64], colBuf[64], audBuf[64], capBuf[64];
+        float hwFps = _metrics.signalInfo.measuredFps > 0.0f ? _metrics.signalInfo.measuredFps : 60.0f;
+        snprintf(inBuf, sizeof(inBuf), "%dx%d%s  %.2fHz",
+                 _srcWidth, _srcHeight, _metrics.signalInfo.interlaced ? "i" : "p", hwFps);
+
+        const char *csTag = _colorspaceUserOverride ? "Manual" :
+            (aviIsRgb(_metrics.signalInfo.aviColorspace) ? "Auto" : "Auto");
+        snprintf(colBuf, sizeof(colBuf), "%s  %s", colorspaceShortName(_colorspaceMode), csTag);
+
+        float audKhz = static_cast<float>(_metrics.signalInfo.audioSampleRate) / 1000.0f;
+        snprintf(audBuf, sizeof(audBuf), "%.1fk Hz Stereo  %s",
+                 audKhz > 0.0f ? audKhz : 48.0f,
+                 _metrics.signalInfo.audioLocked ? "Locked" : "Unlocked");
+
+        snprintf(capBuf, sizeof(capBuf), "%.1ffps  valid %u  drop %u",
+                 _metrics.liveFps, _metrics.validFrames, _metrics.droppedFrames);
+
+        struct HudRow { const char *label; const char *value; uint8_t vr, vg, vb; };
+        const HudRow rows[4] = {
+            {"INPUT",   inBuf,  200, 224, 250},
+            {"COLOR",   colBuf, accR, accG, accB},
+            {"AUDIO",   audBuf,
+                static_cast<uint8_t>(_metrics.signalInfo.audioLocked ? 140 : 225),
+                static_cast<uint8_t>(_metrics.signalInfo.audioLocked ? 230 : 180),
+                static_cast<uint8_t>(_metrics.signalInfo.audioLocked ? 170 : 110)},
+            {"CAPTURE", capBuf, 232, 214, 170},
+        };
+
+        float rowY = cardY + 34.0f;
+        for (const auto &row : rows) {
+            SDL_SetRenderDrawColor(_renderer, 120, 136, 158, static_cast<uint8_t>(alpha * 235 / 255));
+            SDL_RenderDebugText(_renderer, cardX + 12.0f, rowY, row.label);
+            SDL_SetRenderDrawColor(_renderer, row.vr, row.vg, row.vb, static_cast<uint8_t>(alpha * 240 / 255));
+            SDL_RenderDebugText(_renderer, cardX + 74.0f, rowY, row.value);
+            rowY += 13.0f;
+        }
+
+        // Footer hotkey hint.
+        SDL_SetRenderDrawColor(_renderer, 104, 120, 144, static_cast<uint8_t>(alpha * 200 / 255));
+        SDL_RenderDebugText(_renderer, cardX + 12.0f, cardY + 90.0f, "Tab HUD   C Color   F/G Full");
+
+        SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
+    }
+
+    void SdlVideoOutput::renderToast(uint8_t alpha) {
+        if (!_renderer || alpha == 0 || _toastText.empty()) return;
+
+        int winW = 1920, winH = 1080;
+        SDL_GetWindowSize(_window, &winW, &winH);
 
         SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
 
-        // Main card background (deep translucent obsidian)
-        SDL_FRect bgRect{cardX, cardY, cardW, cardH};
-        SDL_SetRenderDrawColor(_renderer, 14, 18, 25, static_cast<uint8_t>(alpha * 230 / 255));
-        SDL_RenderFillRect(_renderer, &bgRect);
+        const float S = 2.0f;
+        SDL_SetRenderScale(_renderer, S, S);
+        const float W = static_cast<float>(winW) / S;
+        const float H = static_cast<float>(winH) / S;
 
-        // Subtle card border (slate grey)
-        SDL_SetRenderDrawColor(_renderer, 55, 70, 90, static_cast<uint8_t>(alpha * 200 / 255));
-        SDL_RenderRect(_renderer, &bgRect);
+        uint8_t accR, accG, accB;
+        accentForColorspace(_colorspaceMode, accR, accG, accB);
 
-        // Accent bar on left edge reflecting colorspace mode
-        SDL_FRect accentRect{cardX, cardY, 4.0f, cardH};
-        uint8_t accR = 0, accG = 180, accB = 216; // BT709 Limited Cyan
-        switch (_colorspaceMode) {
-            case ColorspaceMode::BT709_Full:    accR = 255; accG = 183; accB = 3;   break; // Amber
-            case ColorspaceMode::BT601_Limited: accR = 6;   accG = 214; accB = 160; break; // Emerald
-            case ColorspaceMode::BT601_Full:    accR = 138; accG = 201; accB = 38;  break; // Lime
-            case ColorspaceMode::UYVY_Swap:     accR = 157; accG = 78;  accB = 221; break; // Violet
-            case ColorspaceMode::Direct_YUY2:   accR = 58;  accG = 134; accB = 255; break; // Blue
-            default: break;
-        }
+        float tw = static_cast<float>(_toastText.size()) * 8.0f;
+        float pillW = tw + 34.0f;
+        const float pillH = 20.0f;
+        float pillX = (W - pillW) / 2.0f;
+        float pillY = H - pillH - 26.0f;
+
+        fillRoundRect(_renderer, pillX, pillY, pillW, pillH, pillH / 2.0f,
+                      14, 18, 26, static_cast<uint8_t>(alpha * 230 / 255));
+
+        SDL_FRect dot{pillX + 10.0f, pillY + 7.0f, 6.0f, 6.0f};
         SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);
-        SDL_RenderFillRect(_renderer, &accentRect);
+        SDL_RenderFillRect(_renderer, &dot);
 
-        // Subtle divider line under header
-        SDL_FRect sepRect{cardX + 14.0f, cardY + 25.0f, cardW - 28.0f, 1.0f};
-        SDL_SetRenderDrawColor(_renderer, 45, 58, 75, static_cast<uint8_t>(alpha * 180 / 255));
-        SDL_RenderFillRect(_renderer, &sepRect);
+        SDL_SetRenderDrawColor(_renderer, 232, 238, 248, alpha);
+        SDL_RenderDebugText(_renderer, pillX + 22.0f, pillY + 6.0f, _toastText.c_str());
 
-        // Header Left: Device title
         SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
-        SDL_SetRenderDrawColor(_renderer, 240, 245, 255, alpha);
-        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 11.0f, "AVerMedia CV710 (ExtremeCap U3)");
-
-        // Header Right: Status badge. Prefer the ADV7604 lock state (authoritative
-        // for "is there really an HDMI signal?") over mere frame arrival, which can
-        // be the receiver's free-run pattern when nothing is connected.
-        if (_metrics.signalInfo.valid && _metrics.signalInfo.locked) {
-            SDL_SetRenderDrawColor(_renderer, 76, 214, 100, alpha);
-            SDL_RenderDebugText(_renderer, cardX + cardW - 120.0f, cardY + 11.0f, "[ TMDS LOCK ]");
-        } else if (_metrics.signalInfo.valid) {
-            SDL_SetRenderDrawColor(_renderer, 255, 170, 50, alpha);
-            SDL_RenderDebugText(_renderer, cardX + cardW - 120.0f, cardY + 11.0f, "[ NO SIGNAL ]");
-        } else if (_hasSignal) {
-            SDL_SetRenderDrawColor(_renderer, 0, 200, 255, alpha);
-            SDL_RenderDebugText(_renderer, cardX + cardW - 120.0f, cardY + 11.0f, "[ STREAMING ]");
-        } else {
-            SDL_SetRenderDrawColor(_renderer, 255, 170, 50, alpha);
-            SDL_RenderDebugText(_renderer, cardX + cardW - 120.0f, cardY + 11.0f, "[ NO SIGNAL ]");
-        }
-
-        // Line 1: Video mode (Resolution and hardware refresh rate)
-        char videoBuf[128];
-        float hwFps = _metrics.signalInfo.measuredFps > 0.0f ? _metrics.signalInfo.measuredFps : 60.0f;
-        snprintf(videoBuf, sizeof(videoBuf), "Video: %ux%u%s @ %.2f Hz",
-                 _srcWidth, _srcHeight,
-                 _metrics.signalInfo.interlaced ? "i" : "p",
-                 hwFps);
-        SDL_SetRenderDrawColor(_renderer, 180, 215, 245, static_cast<uint8_t>(alpha * 220 / 255));
-        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 31.0f, videoBuf);
-
-        // Line 2: Colorspace mode and source info
-        char colorBuf[128];
-        const char *csTag = _colorspaceUserOverride ? "Manual" :
-            (aviIsRgb(_metrics.signalInfo.aviColorspace) ? "Auto: RGB" : "Auto: YCbCr");
-        snprintf(colorBuf, sizeof(colorBuf), "Color: %s (%s)",
-                 colorspaceShortName(_colorspaceMode), csTag);
-        SDL_SetRenderDrawColor(_renderer, 210, 225, 240, static_cast<uint8_t>(alpha * 220 / 255));
-        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 47.0f, colorBuf);
-
-        // Line 3: Audio status and sample rate
-        char audioBuf[128];
-        float audKhz = static_cast<float>(_metrics.signalInfo.audioSampleRate) / 1000.0f;
-        snprintf(audioBuf, sizeof(audioBuf), "Audio: %.1f kHz Stereo PCM (%s)",
-                 audKhz > 0.0f ? audKhz : 48.0f,
-                 _metrics.signalInfo.audioLocked ? "Locked" : "Unlocked");
-        if (_metrics.signalInfo.audioLocked) {
-            SDL_SetRenderDrawColor(_renderer, 120, 220, 160, static_cast<uint8_t>(alpha * 220 / 255));
-        } else {
-            SDL_SetRenderDrawColor(_renderer, 220, 170, 110, static_cast<uint8_t>(alpha * 200 / 255));
-        }
-        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 63.0f, audioBuf);
-
-        // Line 4: Host capture performance (FPS, valid frames, drops)
-        char perfBuf[128];
-        snprintf(perfBuf, sizeof(perfBuf), "Capture: %.1f fps | Valid: %u | Drops: %u",
-                 _metrics.liveFps, _metrics.validFrames, _metrics.droppedFrames);
-        SDL_SetRenderDrawColor(_renderer, 235, 215, 165, static_cast<uint8_t>(alpha * 220 / 255));
-        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 79.0f, perfBuf);
-
-        // Line 5: Hotkeys guide
-        SDL_SetRenderDrawColor(_renderer, 115, 140, 170, static_cast<uint8_t>(alpha * 190 / 255));
-        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 97.0f, "[Tab/O] HUD  [C] Color  [F/G] Fullscreen");
     }
 
     void SdlVideoOutput::loadSplashBitmaps() {

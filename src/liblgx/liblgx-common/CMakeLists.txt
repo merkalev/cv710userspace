@@ -12,6 +12,8 @@ set(BOOTSTRAP_SOURCES
 set(SDLOUTPUT_SOURCES
         src/sdl/SdlVideoOutput.cpp
         src/sdl/SdlVideoOutput.h
+        src/sdl/SdlTextRenderer.cpp
+        src/sdl/SdlTextRenderer.h
         src/sdl/SdlAudioOutput.cpp
         src/sdl/SdlAudioOutput.h)
 
@@ -44,6 +46,7 @@ add_library(liblgx-common STATIC
 
 target_include_directories(liblgx-common PUBLIC src)
 target_include_directories(liblgx-common PRIVATE ../src)
+target_include_directories(liblgx-common PRIVATE ${PROJECT_SOURCE_DIR}/third_party/stb)
 
 target_link_libraries(liblgx-common PUBLIC
         PkgConfig::SDL3

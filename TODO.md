@@ -42,5 +42,7 @@
 - [x] Expanded USB queue depth to 128 transfers (~256 MB buffer) and pipeline depth to 16.
 - [x] Renovated HUD OSD into a rounded "glass" card (accent top-line + dot, coloured status pill, aligned `LABEL value` rows) with hotkey hint.
 - [x] Split the transient mode/resolution notification out of the diagnostic card into a small rounded bottom-centre toast with its own fade.
+- [x] Replaced the 8x8 SDL debug font with a modern antialiased TTF (vendored `stb_truetype`; auto-detects Inter / Noto Sans / Fira Sans, override via `CV710_FONT` or `assets/fonts/ui.ttf`). HUD/toast now render at native resolution and are ~60% smaller.
 - [x] AVX2-accelerated YUY2→RGBA conversion (`_mm256_*`, runtime dispatch, bit-exact vs scalar incl. CV-09).
+- [x] Fixed a false-positive dropped frame once per 255-frame cycle: the FPGA C0 sequence counter wraps `0xFF`→`0x01` and never emits `0x00`; the parser now treats that wrap as continuous (CV-22).
 - [x] Clean CMake build system with portable asset discovery and zero hardcoded paths.

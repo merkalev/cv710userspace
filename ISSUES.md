@@ -500,13 +500,52 @@ Credit: This work builds upon the pioneering research and userspace driver found
   popped up the *entire* diagnostic card for 2.5 s, which read as visual noise.
 
 ### Now
-- The persistent diagnostic HUD (Tab/O) is a rounded "glass" card at 2x scale: accent
-  glow line + dot, a filled coloured status pill (`LOCKED` / `NO SIGNAL` / `LIVE`),
-  a divider, aligned dim `LABEL` + bright value rows, and a compact hotkey hint.
+- The persistent diagnostic HUD (Tab/O) is a rounded "glass" card drawn at native
+  resolution (no 2x debug-font scaling): accent glow line + dot, a filled coloured
+  status pill (`LOCKED` / `NO SIGNAL` / `LIVE`), a divider, aligned dim `LABEL` +
+  bright value rows, and a compact hotkey hint.
 - Transient events now show a small rounded **toast** pill at the bottom-centre
   (accent dot + message) with its own fade, instead of the full card.
-- Implemented with only SDL primitives (no SDL_ttf dependency): `fillRoundRect()`
-  draws rounded rectangles from horizontal spans so they composite correctly.
+- The 8x8 SDL debug font was replaced by a modern antialiased TTF via the vendored
+  public-domain `stb_truetype` (`SdlTextRenderer`): ASCII glyphs are packed into one
+  2x-oversampled atlas texture and blitted with a tint + alpha. This is what makes
+  the OSD read as modern text instead of blocky debug pixels, and lets the card be
+  ~60% smaller in area.
+- Rounded rectangles are still drawn from horizontal spans (`fillRoundRect()`), so
+  they composite correctly with the renderer's alpha blending.
+- Font selection: `CV710_FONT` env override, then `assets/fonts/ui.ttf`, then a
+  system search (Inter, Noto Sans Medium/Regular, Fira Sans, Liberation, DejaVu).
+  If none loads, the OSD gracefully falls back to `SDL_RenderDebugText`.
+
+---
+
+## 21. False-Positive Dropped Frame Every ~4 Seconds (CV-22 — FIXED)
+
+### Symptom
+- With the persistent HUD on, the `CAPTURE` row's `drop` counter crept up by one
+  every ~4.25 s (e.g. "100 frames dropped") on a perfectly healthy 1080p60 stream,
+  even though USB queue drops stayed at 0.
+
+### Root Cause
+- The parser expected the C0 header sequence counter to advance as
+  `(last + 1) & 0xFF`, i.e. `0xFF` → `0x00`. Logging every genuine C0 on hardware
+  showed the FPGA counter actually runs **1..0xFF and wraps `0xFF` → `0x01`; it never
+  emits `0x00`.** So once per 255-frame cycle the wrap was misclassified as a
+  transport gap and one bogus dropped frame was counted.
+- The capture/parse code was byte-identical to the previous "flawless" build; this
+  was a long-standing counter bug newly *visible* only because the HUD is now
+  persistent.
+
+### Resolution
+- Added `nextFrameSeq()`: `0xFF` → `0x01`, otherwise `seq + 1`. A genuine loss that
+  straddles the wrap (e.g. `0xFF` → `0x02`) is still detected as a gap.
+- Zero the visible drop counters at stream lock so the HUD reports drops *since
+  lock* rather than one-time startup resync noise.
+- Documented the counter range/wrap in `PROTOCOL.md`.
+
+### Verification
+- Hardware: `drop` stays at 0 across 13+ wrap cycles (was +1 every cycle); a 60 s
+  headless run showed `drops: 0` throughout.
 
 ---
 

@@ -72,6 +72,8 @@ The application will initialize the hardware and stream 1080p60 uncompressed vid
 
 Resolution and colour changes briefly show a small bottom-centre **toast**; the full HUD is only shown when you ask for it with `Tab`/`O`.
 
+The OSD uses a modern antialiased TTF (Inter / Noto Sans / Fira Sans are auto-detected on the system). To force a specific font, set `CV710_FONT=/path/to/font.ttf`, or drop a font at `assets/fonts/ui.ttf`. If no TTF is found the OSD falls back to the built-in SDL debug font.
+
 Command-line flags:
 * `-c COLOR`: Set initial colorspace (`bt709`, `bt709full`, `bt601`, `bt601full`, `uyvy`, `yuy2`).
 * `-S SCALE`: Output scaling factor (`1` = full, `2` = half, `4` = quarter).

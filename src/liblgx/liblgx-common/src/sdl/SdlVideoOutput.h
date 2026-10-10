@@ -2,6 +2,7 @@
 #define LGX2USERSPACE_SDLVIDEOOUTPUT_H
 
 #include "lgxdevice.h"
+#include "SdlTextRenderer.h"
 #include <SDL3/SDL.h>
 #include <chrono>
 #include <string>
@@ -54,12 +55,14 @@ namespace sdl {
         void renderToast(uint8_t alpha);
         void updateTextureFormat();
         void loadSplashBitmaps();
+        void loadFont();
         void convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int srcWidth, int dstWidth, int dstHeight, int step);
 
         SDL_Window *_window{nullptr};
         SDL_Renderer *_renderer{nullptr};
         SDL_Texture *_texture{nullptr};
         SDL_Texture *_splashTexture{nullptr};
+        SdlTextRenderer _textRenderer;
         lgx2::VideoScale _targetScale{lgx2::VideoScale::Full};
 
         ColorspaceMode _colorspaceMode{ColorspaceMode::BT709_Limited};

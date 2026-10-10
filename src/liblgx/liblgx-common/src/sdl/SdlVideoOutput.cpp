@@ -1,9 +1,11 @@
 #include "SdlVideoOutput.h"
+#include "SdlTextRenderer.h"
 
 #include <SDL3/SDL.h>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <cstdlib>
 #include <stdexcept>
 #include <vector>
 #include <string>
@@ -184,6 +186,7 @@ namespace sdl {
 
         updateTextureFormat();
         loadSplashBitmaps();
+        loadFont();
         updateWindowTitle();
 
         SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
@@ -860,23 +863,26 @@ namespace sdl {
 
         SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
 
-        // Drawn in logical units at 2x so the built-in 8px font reads at 16px.
-        const float S = 2.0f;
-        SDL_SetRenderScale(_renderer, S, S);
-        const float W = static_cast<float>(winW) / S;
-
-        const float cardW = 328.0f;
-        const float cardH = 104.0f;
+        // Compact native-resolution card. The TTF renderer draws antialiased
+        // glyphs at their true size, so there is no 2x debug-font scaling.
+        const float W = static_cast<float>(winW);
+        const float lh = static_cast<float>(_textRenderer.loaded() ? _textRenderer.lineHeight() : 14);
+        const float pitch = lh + 2.0f;
+        const float cardW = 252.0f;
         const float margin = 14.0f;
-        const float rad = 8.0f;
+        const float rad = 10.0f;
         const float cardX = W - cardW - margin;
         const float cardY = margin;
+        const float rowTop = cardY + 35.0f;
+        const float rowsBottom = rowTop + 4.0f * pitch - 2.0f;
+        const float footerTop = rowsBottom + 4.0f;
+        const float cardH = footerTop - cardY + lh + 9.0f;
 
         uint8_t accR, accG, accB;
         accentForColorspace(_colorspaceMode, accR, accG, accB);
 
         // Soft drop shadow.
-        fillRoundRect(_renderer, cardX + 4.0f, cardY + 5.0f, cardW, cardH, rad,
+        fillRoundRect(_renderer, cardX + 3.0f, cardY + 4.0f, cardW, cardH, rad,
                       0, 0, 0, static_cast<uint8_t>(alpha * 90 / 255));
 
         // Frosted obsidian card body.
@@ -895,11 +901,17 @@ namespace sdl {
                       accR, accG, accB, alpha);
 
         // Header: accent dot + device title.
-        SDL_FRect dot{cardX + 14.0f, cardY + 12.0f, 6.0f, 6.0f};
+        SDL_FRect dot{cardX + 12.0f, cardY + 11.0f, 6.0f, 6.0f};
         SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);
         SDL_RenderFillRect(_renderer, &dot);
-        SDL_SetRenderDrawColor(_renderer, 238, 244, 255, alpha);
-        SDL_RenderDebugText(_renderer, cardX + 26.0f, cardY + 11.0f, "AVerMedia CV710");
+
+        static const char *kTitle = "AVerMedia CV710";
+        if (_textRenderer.loaded()) {
+            _textRenderer.draw(_renderer, kTitle, cardX + 24.0f, cardY + 7.0f, 238, 244, 255, alpha);
+        } else {
+            SDL_SetRenderDrawColor(_renderer, 238, 244, 255, alpha);
+            SDL_RenderDebugText(_renderer, cardX + 26.0f, cardY + 11.0f, kTitle);
+        }
 
         // Status pill (right side of the header).
         const char *statusText;
@@ -911,18 +923,22 @@ namespace sdl {
         } else {
             statusText = "LIVE";      sr = 0;   sg = 170; sb = 220;
         }
-        float pillW = static_cast<float>(std::strlen(statusText)) * 8.0f + 14.0f;
-        const float pillH = 14.0f;
-        float pillX = cardX + cardW - 12.0f - pillW;
+        float pillH = lh + 4.0f;
+        float pillW = static_cast<float>(_textRenderer.measure(statusText)) + 18.0f;
+        float pillX = cardX + cardW - 10.0f - pillW;
         float pillY = cardY + 8.0f;
         fillRoundRect(_renderer, pillX, pillY, pillW, pillH, pillH / 2.0f,
                       sr, sg, sb, static_cast<uint8_t>(alpha * 235 / 255));
-        SDL_SetRenderDrawColor(_renderer, 10, 14, 20, alpha);
-        SDL_RenderDebugText(_renderer, pillX + 7.0f, pillY + 3.0f, statusText);
+        if (_textRenderer.loaded()) {
+            _textRenderer.draw(_renderer, statusText, pillX + 9.0f, pillY + 2.0f, 10, 14, 20, alpha);
+        } else {
+            SDL_SetRenderDrawColor(_renderer, 10, 14, 20, alpha);
+            SDL_RenderDebugText(_renderer, pillX + 7.0f, pillY + 3.0f, statusText);
+        }
 
         // Divider under the header.
         SDL_SetRenderDrawColor(_renderer, 52, 64, 82, static_cast<uint8_t>(alpha * 170 / 255));
-        SDL_FRect divider{cardX + 12.0f, cardY + 26.0f, cardW - 24.0f, 1.0f};
+        SDL_FRect divider{cardX + 12.0f, cardY + 28.0f, cardW - 24.0f, 1.0f};
         SDL_RenderFillRect(_renderer, &divider);
 
         // Rows: dim label, bright value.
@@ -954,20 +970,33 @@ namespace sdl {
             {"CAPTURE", capBuf, 232, 214, 170},
         };
 
-        float rowY = cardY + 34.0f;
+        const float labelX = cardX + 12.0f;
+        const float valueX = cardX + 62.0f;
+        float rowY = rowTop;
         for (const auto &row : rows) {
-            SDL_SetRenderDrawColor(_renderer, 120, 136, 158, static_cast<uint8_t>(alpha * 235 / 255));
-            SDL_RenderDebugText(_renderer, cardX + 12.0f, rowY, row.label);
-            SDL_SetRenderDrawColor(_renderer, row.vr, row.vg, row.vb, static_cast<uint8_t>(alpha * 240 / 255));
-            SDL_RenderDebugText(_renderer, cardX + 74.0f, rowY, row.value);
-            rowY += 13.0f;
+            if (_textRenderer.loaded()) {
+                _textRenderer.draw(_renderer, row.label, labelX, rowY,
+                                   120, 136, 158, static_cast<uint8_t>(alpha * 235 / 255));
+                _textRenderer.draw(_renderer, row.value, valueX, rowY,
+                                   row.vr, row.vg, row.vb, static_cast<uint8_t>(alpha * 240 / 255));
+            } else {
+                SDL_SetRenderDrawColor(_renderer, 120, 136, 158, static_cast<uint8_t>(alpha * 235 / 255));
+                SDL_RenderDebugText(_renderer, labelX, rowY, row.label);
+                SDL_SetRenderDrawColor(_renderer, row.vr, row.vg, row.vb, static_cast<uint8_t>(alpha * 240 / 255));
+                SDL_RenderDebugText(_renderer, valueX, rowY, row.value);
+            }
+            rowY += pitch;
         }
 
         // Footer hotkey hint.
-        SDL_SetRenderDrawColor(_renderer, 104, 120, 144, static_cast<uint8_t>(alpha * 200 / 255));
-        SDL_RenderDebugText(_renderer, cardX + 12.0f, cardY + 90.0f, "Tab HUD   C Color   F/G Full");
-
-        SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
+        static const char *kHint = "Tab HUD   C Color   F/G Full";
+        if (_textRenderer.loaded()) {
+            _textRenderer.draw(_renderer, kHint, cardX + 12.0f, footerTop,
+                               104, 120, 144, static_cast<uint8_t>(alpha * 200 / 255));
+        } else {
+            SDL_SetRenderDrawColor(_renderer, 104, 120, 144, static_cast<uint8_t>(alpha * 200 / 255));
+            SDL_RenderDebugText(_renderer, cardX + 12.0f, footerTop, kHint);
+        }
     }
 
     void SdlVideoOutput::renderToast(uint8_t alpha) {
@@ -978,31 +1007,32 @@ namespace sdl {
 
         SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
 
-        const float S = 2.0f;
-        SDL_SetRenderScale(_renderer, S, S);
-        const float W = static_cast<float>(winW) / S;
-        const float H = static_cast<float>(winH) / S;
+        const float lh = static_cast<float>(_textRenderer.loaded() ? _textRenderer.lineHeight() : 14);
+        const float W = static_cast<float>(winW);
+        const float H = static_cast<float>(winH);
 
         uint8_t accR, accG, accB;
         accentForColorspace(_colorspaceMode, accR, accG, accB);
 
-        float tw = static_cast<float>(_toastText.size()) * 8.0f;
+        float tw = static_cast<float>(_textRenderer.measure(_toastText));
+        float pillH = lh + 8.0f;
         float pillW = tw + 34.0f;
-        const float pillH = 20.0f;
         float pillX = (W - pillW) / 2.0f;
         float pillY = H - pillH - 26.0f;
 
         fillRoundRect(_renderer, pillX, pillY, pillW, pillH, pillH / 2.0f,
                       14, 18, 26, static_cast<uint8_t>(alpha * 230 / 255));
 
-        SDL_FRect dot{pillX + 10.0f, pillY + 7.0f, 6.0f, 6.0f};
+        SDL_FRect dot{pillX + 11.0f, pillY + (pillH - 6.0f) / 2.0f, 6.0f, 6.0f};
         SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);
         SDL_RenderFillRect(_renderer, &dot);
 
-        SDL_SetRenderDrawColor(_renderer, 232, 238, 248, alpha);
-        SDL_RenderDebugText(_renderer, pillX + 22.0f, pillY + 6.0f, _toastText.c_str());
-
-        SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
+        if (_textRenderer.loaded()) {
+            _textRenderer.draw(_renderer, _toastText, pillX + 23.0f, pillY + 4.0f, 232, 238, 248, alpha);
+        } else {
+            SDL_SetRenderDrawColor(_renderer, 232, 238, 248, alpha);
+            SDL_RenderDebugText(_renderer, pillX + 22.0f, pillY + 6.0f, _toastText.c_str());
+        }
     }
 
     void SdlVideoOutput::loadSplashBitmaps() {
@@ -1046,6 +1076,69 @@ namespace sdl {
         }
     }
 
+    void SdlVideoOutput::loadFont() {
+        if (!_renderer) return;
+
+        // OSD glyph pixel height: small enough to feel like an overlay, large
+        // enough to read at 1080p. (The old 8x8 debug font drew at 16px.)
+        const float pixelHeight = 14.0f;
+
+        // Explicit override wins.
+        if (const char *env = std::getenv("CV710_FONT"); env != nullptr && *env != '\0') {
+            if (_textRenderer.loadFromFile(env, pixelHeight, _renderer)) {
+                printf("[Video] Loaded OSD font: %s\n", env);
+                fflush(stdout);
+                return;
+            }
+            fprintf(stderr, "[Video] CV710_FONT=%s could not be loaded; searching defaults\n", env);
+        }
+
+        // Optional bundled font (assets/fonts/ui.ttf), using the same base-path
+        // walk as the standby bitmap so an in-tree assets/ folder is found.
+        std::vector<std::string> dirs;
+        dirs.emplace_back("");
+        dirs.emplace_back("./");
+        if (const char *basePath = SDL_GetBasePath()) {
+            std::string base(basePath);
+            dirs.push_back(base);
+            for (int i = 1; i <= 4; ++i) {
+                base += "../";
+                dirs.push_back(base);
+            }
+        }
+        dirs.emplace_back("/usr/local/share/cv710userspace/");
+        dirs.emplace_back("/usr/share/cv710userspace/");
+        for (const auto &dir : dirs) {
+            std::string path = dir + "assets/fonts/ui.ttf";
+            if (_textRenderer.loadFromFile(path, pixelHeight, _renderer)) {
+                printf("[Video] Loaded OSD font: %s\n", path.c_str());
+                fflush(stdout);
+                return;
+            }
+        }
+
+        // System fonts: prefer modern humanist/geometric sans faces.
+        static const char *candidates[] = {
+            "/usr/share/fonts/TTF/ttf-google-fonts-typewolf/Inter[opsz,wght].ttf",
+            "/usr/share/fonts/noto/NotoSans-Medium.ttf",
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/TTF/ttf-google-fonts-typewolf/FiraSans-SemiBold.ttf",
+            "/usr/share/fonts/TTF/ttf-google-fonts-typewolf/FiraSans-Regular.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        };
+        for (const char *path : candidates) {
+            if (_textRenderer.loadFromFile(path, pixelHeight, _renderer)) {
+                printf("[Video] Loaded OSD font: %s\n", path);
+                fflush(stdout);
+                return;
+            }
+        }
+
+        fprintf(stderr, "[Video] No TTF font found; OSD uses the SDL debug font "
+                        "(install a sans font or set CV710_FONT)\n");
+    }
+
     void SdlVideoOutput::renderSplashScreen() {
         int winW = 1920, winH = 1080;
         SDL_GetWindowSize(_window, &winW, &winH);
@@ -1081,6 +1174,7 @@ namespace sdl {
         delete[] _rgbaBuffer;
         _rgbaBuffer = nullptr;
 
+        _textRenderer.destroy();
         if (_splashTexture) {
             SDL_DestroyTexture(_splashTexture);
             _splashTexture = nullptr;

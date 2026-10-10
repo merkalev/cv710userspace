@@ -863,16 +863,75 @@ namespace sdl {
 
         SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
 
-        // Compact native-resolution card. The TTF renderer draws antialiased
-        // glyphs at their true size, so there is no 2x debug-font scaling.
-        const float W = static_cast<float>(winW);
-        const float lh = static_cast<float>(_textRenderer.loaded() ? _textRenderer.lineHeight() : 14);
-        const float pitch = lh + 2.0f;
-        const float cardW = 252.0f;
+        // Build every string up front, then size the card to the widest content
+        // so labels can never collide with values, regardless of which font
+        // loaded (fallback 8x8 debug font is much wider than Inter).
+        char inBuf[64], colBuf[64], audBuf[64], capBuf[64];
+        float hwFps = _metrics.signalInfo.measuredFps > 0.0f ? _metrics.signalInfo.measuredFps : 60.0f;
+        snprintf(inBuf, sizeof(inBuf), "%dx%d%s  %.2fHz",
+                 _srcWidth, _srcHeight, _metrics.signalInfo.interlaced ? "i" : "p", hwFps);
+
+        const char *csTag = _colorspaceUserOverride ? "Manual" :
+            (aviIsRgb(_metrics.signalInfo.aviColorspace) ? "Auto" : "Auto");
+        snprintf(colBuf, sizeof(colBuf), "%s  %s", colorspaceShortName(_colorspaceMode), csTag);
+
+        float audKhz = static_cast<float>(_metrics.signalInfo.audioSampleRate) / 1000.0f;
+        snprintf(audBuf, sizeof(audBuf), "%.1fk Hz Stereo  %s",
+                 audKhz > 0.0f ? audKhz : 48.0f,
+                 _metrics.signalInfo.audioLocked ? "Locked" : "Unlocked");
+
+        snprintf(capBuf, sizeof(capBuf), "%.1ffps  valid %u  drop %u",
+                 _metrics.liveFps, _metrics.validFrames, _metrics.droppedFrames);
+
+        static const char *kTitle = "AVerMedia CV710";
+        static const char *kHint = "Tab HUD   C Color   F/G Full";
+        static const char *kLabels[4] = {"INPUT", "COLOR", "AUDIO", "CAPTURE"};
+        const char *kValues[4] = {inBuf, colBuf, audBuf, capBuf};
+
+        auto textW = [this](const char *s) {
+            if (!_textRenderer.loaded()) return static_cast<float>(std::strlen(s)) * 8.0f;
+            return static_cast<float>(_textRenderer.measure(s));
+        };
+
+        // Widest label decides the label column width, widest value its own;
+        // with a fixed gap between them they can never overlap.
+        float labelColW = 0.0f, valueColW = 0.0f;
+        for (int i = 0; i < 4; ++i) {
+            labelColW = std::max(labelColW, textW(kLabels[i]));
+            valueColW = std::max(valueColW, textW(kValues[i]));
+        }
+
+        const char *statusText;
+        uint8_t sr, sg, sb;
+        if (_metrics.signalInfo.valid && _metrics.signalInfo.locked) {
+            statusText = "LOCKED";    sr = 46;  sg = 200; sb = 96;
+        } else if (_metrics.signalInfo.valid) {
+            statusText = "NO SIGNAL"; sr = 235; sg = 150; sb = 40;
+        } else {
+            statusText = "LIVE";      sr = 0;   sg = 170; sb = 220;
+        }
+        const float pillW = textW(statusText) + 18.0f;
+
+        constexpr float kLeftPad   = 12.0f;
+        constexpr float kValueGap  = 10.0f;
+        constexpr float kRightPad  = 12.0f;
+        constexpr float kTitleX    = 24.0f;
+        constexpr float kPillGap   = 8.0f;
+        constexpr float kPillRight = 10.0f;
+
+        const float contentNeed = kLeftPad + labelColW + kValueGap + valueColW + kRightPad;
+        const float headerNeed  = kTitleX + textW(kTitle) + kPillGap + pillW + kPillRight;
+        const float footerNeed  = kLeftPad + textW(kHint) + kRightPad;
+
         const float margin = 14.0f;
         const float rad = 10.0f;
-        const float cardX = W - cardW - margin;
+        const float cardW = std::max(contentNeed,
+                              std::max(headerNeed, std::max(footerNeed, 248.0f)));
+        const float cardX = static_cast<float>(winW) - cardW - margin;
         const float cardY = margin;
+
+        const float lh = static_cast<float>(_textRenderer.loaded() ? _textRenderer.lineHeight() : 14);
+        const float pitch = lh + 2.0f;
         const float rowTop = cardY + 35.0f;
         const float rowsBottom = rowTop + 4.0f * pitch - 2.0f;
         const float footerTop = rowsBottom + 4.0f;
@@ -904,28 +963,16 @@ namespace sdl {
         SDL_FRect dot{cardX + 12.0f, cardY + 11.0f, 6.0f, 6.0f};
         SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);
         SDL_RenderFillRect(_renderer, &dot);
-
-        static const char *kTitle = "AVerMedia CV710";
         if (_textRenderer.loaded()) {
-            _textRenderer.draw(_renderer, kTitle, cardX + 24.0f, cardY + 7.0f, 238, 244, 255, alpha);
+            _textRenderer.draw(_renderer, kTitle, cardX + kTitleX, cardY + 7.0f, 238, 244, 255, alpha);
         } else {
             SDL_SetRenderDrawColor(_renderer, 238, 244, 255, alpha);
-            SDL_RenderDebugText(_renderer, cardX + 26.0f, cardY + 11.0f, kTitle);
+            SDL_RenderDebugText(_renderer, cardX + kTitleX + 2.0f, cardY + 11.0f, kTitle);
         }
 
         // Status pill (right side of the header).
-        const char *statusText;
-        uint8_t sr, sg, sb;
-        if (_metrics.signalInfo.valid && _metrics.signalInfo.locked) {
-            statusText = "LOCKED";    sr = 46;  sg = 200; sb = 96;
-        } else if (_metrics.signalInfo.valid) {
-            statusText = "NO SIGNAL"; sr = 235; sg = 150; sb = 40;
-        } else {
-            statusText = "LIVE";      sr = 0;   sg = 170; sb = 220;
-        }
         float pillH = lh + 4.0f;
-        float pillW = static_cast<float>(_textRenderer.measure(statusText)) + 18.0f;
-        float pillX = cardX + cardW - 10.0f - pillW;
+        float pillX = cardX + cardW - kPillRight - pillW;
         float pillY = cardY + 8.0f;
         fillRoundRect(_renderer, pillX, pillY, pillW, pillH, pillH / 2.0f,
                       sr, sg, sb, static_cast<uint8_t>(alpha * 225 / 255));
@@ -938,27 +985,10 @@ namespace sdl {
 
         // Divider under the header.
         SDL_SetRenderDrawColor(_renderer, 52, 64, 82, static_cast<uint8_t>(alpha * 170 / 255));
-        SDL_FRect divider{cardX + 12.0f, cardY + 28.0f, cardW - 24.0f, 1.0f};
+        SDL_FRect divider{cardX + kLeftPad, cardY + 28.0f, cardW - 2.0f * kLeftPad, 1.0f};
         SDL_RenderFillRect(_renderer, &divider);
 
         // Rows: dim label, bright value.
-        char inBuf[64], colBuf[64], audBuf[64], capBuf[64];
-        float hwFps = _metrics.signalInfo.measuredFps > 0.0f ? _metrics.signalInfo.measuredFps : 60.0f;
-        snprintf(inBuf, sizeof(inBuf), "%dx%d%s  %.2fHz",
-                 _srcWidth, _srcHeight, _metrics.signalInfo.interlaced ? "i" : "p", hwFps);
-
-        const char *csTag = _colorspaceUserOverride ? "Manual" :
-            (aviIsRgb(_metrics.signalInfo.aviColorspace) ? "Auto" : "Auto");
-        snprintf(colBuf, sizeof(colBuf), "%s  %s", colorspaceShortName(_colorspaceMode), csTag);
-
-        float audKhz = static_cast<float>(_metrics.signalInfo.audioSampleRate) / 1000.0f;
-        snprintf(audBuf, sizeof(audBuf), "%.1fk Hz Stereo  %s",
-                 audKhz > 0.0f ? audKhz : 48.0f,
-                 _metrics.signalInfo.audioLocked ? "Locked" : "Unlocked");
-
-        snprintf(capBuf, sizeof(capBuf), "%.1ffps  valid %u  drop %u",
-                 _metrics.liveFps, _metrics.validFrames, _metrics.droppedFrames);
-
         struct HudRow { const char *label; const char *value; uint8_t vr, vg, vb; };
         const HudRow rows[4] = {
             {"INPUT",   inBuf,  200, 224, 250},
@@ -970,8 +1000,8 @@ namespace sdl {
             {"CAPTURE", capBuf, 232, 214, 170},
         };
 
-        const float labelX = cardX + 12.0f;
-        const float valueX = cardX + 62.0f;
+        const float labelX = cardX + kLeftPad;
+        const float valueX = labelX + labelColW + kValueGap;
         float rowY = rowTop;
         for (const auto &row : rows) {
             if (_textRenderer.loaded()) {
@@ -989,13 +1019,12 @@ namespace sdl {
         }
 
         // Footer hotkey hint.
-        static const char *kHint = "Tab HUD   C Color   F/G Full";
         if (_textRenderer.loaded()) {
-            _textRenderer.draw(_renderer, kHint, cardX + 12.0f, footerTop,
+            _textRenderer.draw(_renderer, kHint, cardX + kLeftPad, footerTop,
                                104, 120, 144, static_cast<uint8_t>(alpha * 200 / 255));
         } else {
             SDL_SetRenderDrawColor(_renderer, 104, 120, 144, static_cast<uint8_t>(alpha * 200 / 255));
-            SDL_RenderDebugText(_renderer, cardX + 12.0f, footerTop, kHint);
+            SDL_RenderDebugText(_renderer, cardX + kLeftPad, footerTop, kHint);
         }
     }
 

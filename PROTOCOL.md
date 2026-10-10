@@ -50,7 +50,7 @@ Word 1: [b3][b2][b1][b0]  (32-bit metadata word)
 ```
 
 The metadata bytes are defined as follows:
-- `b0`: Sequence number (`0x00` through `0xFF`), incrementing by 1 per frame sub-chunk.
+- `b0`: Sequence counter. The FPGA emits `0x01` through `0xFF` and **never emits `0x00`**, incrementing by 1 per frame sub-chunk and wrapping `0xFF` → `0x01`. (Verified by logging every C0 across multiple full cycles on real hardware.)
 - `b1`: Fixed flag byte, must equal `0x01`.
 - `b2`: Field and scanning mode flags:
   - `b2 & 0x80`: Dual-field interlaced video indicator (1 = interlaced, 0 = progressive).
@@ -66,11 +66,13 @@ bool isValidHeader = (b1 == 0x01) && (calculated == b3);
 If this condition evaluates to true, the header is verified genuine. If false, the word is treated as standard video payload.
 
 ### Sequence Continuity and Resynchronization
-When `b0 != ((lastSeq + 1) & 0xFF)`, a transport gap has occurred (typically caused by heavy CPU load or USB host transfer drops). The parser immediately:
+The sequence counter wraps `0xFF` → `0x01` rather than through `0x00`, so the expected next value is `nextSeq(last) = (last == 0xFF) ? 0x01 : last + 1`. When `b0 != nextSeq(lastSeq)`, a transport gap has occurred (typically caused by heavy CPU load or USB host transfer drops). The parser immediately:
 1. Discards the current partial video frame.
 2. Clears the audio accumulation buffer.
 3. Resynchronizes to the new C0 boundary.
 4. Mutes audio until consecutive clean frames arrive.
+
+A genuine loss that straddles the wrap (e.g. `0xFF` → `0x02`) is still detected as a gap.
 
 ### The C1 Trailer Structure and Validation
 When an active video frame completes, the device sends the C1 trailer:

@@ -12,6 +12,17 @@
 
 namespace lgx2 {
 
+    namespace {
+        // The CV710 C0 sequence counter runs 1..0xFF and wraps 0xFF -> 0x01: on
+        // real hardware it never emits 0x00 (verified by logging every C0 for a
+        // full cycle). Treat that wrap as continuous so a healthy stream is not
+        // reported as a dropped frame once per 255-frame cycle. A genuine loss
+        // across the wrap (e.g. 0xFF -> 0x02) is still detected.
+        inline uint8_t nextFrameSeq(uint8_t seq) {
+            return seq == 0xFF ? 0x01 : static_cast<uint8_t>(seq + 1);
+        }
+    }
+
     Device::Device(Stream *stream, VideoOutput *videoOutput, AudioOutput *audioOutput, Logger *logger, ErrorSink *errorSink)
             : _stream{stream}, _videoOutput{videoOutput}, _audioOutput{audioOutput}, _logger{logger}, _errorSink{errorSink} {
         _interlacedBuffer.resize(1920 * 1080 / 2, 0x80108010u);
@@ -216,6 +227,11 @@ namespace lgx2 {
                     }
                     if (b1 == 0x01 && (chk == b3)) {
                         _streamLocked = true;
+                        // Start the visible drop count at stream lock: the resync
+                        // events while hunting for the first C0 are one-time
+                        // startup noise, not ongoing transport loss.
+                        _droppedFrames = 0;
+                        _receiverMismatchDrops = 0;
                         _lastSeq = b0;
                         _frameBuilder.clearVideo();
                         _frameBuilder.clearAudio();
@@ -263,7 +279,7 @@ namespace lgx2 {
                     if (b1 == 0x01 && (((b0 + b1 + b2 - 0x40) & 0xFF) == b3)) {
                         // Genuine C0 header marks the start of a new video frame / field.
                         _currentFieldFlags = b2;
-                        if (_lastSeq >= 0 && b0 != ((_lastSeq + 1) & 0xFF)) {
+                        if (_lastSeq >= 0 && b0 != nextFrameSeq(static_cast<uint8_t>(_lastSeq))) {
                             // Transport gap (CPU lag / dropped USB transfers).
                             // Keep the weave parity state: clearing it here would
                             // prevent interlaced frames from ever completing when

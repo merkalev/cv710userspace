@@ -456,14 +456,14 @@ namespace libusb {
         }
 
         // Colorspace: HDMI map 0x53 low nibble (Linux hdmi_color_space_txt).
-        // Map to the app's 0=RGB, 1=YCbCr 4:2:2, 2=YCbCr (full range) scheme.
-        uint8_t aviCs;
-        switch (csByte & 0x0F) {
-            case 0x0: case 0x1: aviCs = 0; break;      // RGB (limited/full)
-            case 0x2: case 0x3: aviCs = 1; break;      // YCbCr 601/709 limited
-            case 0x6: case 0x7: aviCs = 2; break;      // YCbCr 601/709 full range
-            default:            aviCs = 1; break;      // xvYCC/sYCC/opRGB -> YCbCr
-        }
+        // Store the RAW code (0 RGB limited, 1 RGB full, 2 YCbCr601 limited,
+        // 3 YCbCr709 limited, 6 YCbCr601 full, 7 YCbCr709 full, others
+        // xvYCC/sYCC/opRGB) exactly as documented on VideoSignalInfo. The
+        // consumption side (SdlVideoOutput::autoColorspaceForCode / aviIsRgb /
+        // autoColorspaceSourceLabel) decodes this raw nibble, so remapping to a
+        // 0/1/2 app scheme here made e.g. YCbCr-limited (raw 3) decode as
+        // "RGB full" and select BT.709 Full instead of Limited (CV-25).
+        uint8_t aviCs = csByte & 0x0F;
 
         // Refresh rate from the measured pixel clock and total timings, snapped
         // to the nearest CEA/standard rate. This correctly distinguishes e.g.
@@ -563,13 +563,24 @@ namespace libusb {
             if (haveStdi) {
                 snprintf(stdiBuf, sizeof(stdiBuf), " | STDI: %u lines (bl %u)", stdiLcf, stdiBl);
             }
+            // Raw HDMI 0x53 nibble labels (mirrors autoColorspaceSourceLabel).
+            const char *csLabel = "Other";
+            switch (published.aviColorspace & 0x0F) {
+                case 0x0: csLabel = "RGB limited";  break;
+                case 0x1: csLabel = "RGB full";     break;
+                case 0x2: csLabel = "YCbCr 601 limited"; break;
+                case 0x3: csLabel = "YCbCr 709 limited"; break;
+                case 0x6: csLabel = "YCbCr 601 full";    break;
+                case 0x7: csLabel = "YCbCr 709 full";    break;
+                default:  break;
+            }
             printf("[ADV7604] Lock: %s | Active: %ux%u%s @ %.2f Hz | Lines: %u | Audio: %u Hz | Colorspace: %s | VID_STD: 0x%02X%s%s\n",
                    published.locked ? "YES" : "NO",
                    published.activeWidth,
                    published.interlaced ? published.activeHeight * 2 : published.activeHeight,
                    published.interlaced ? "i" : "p", published.measuredFps, published.totalLines,
                    published.audioSampleRate,
-                   published.aviColorspace == 0 ? "RGB" : (published.aviColorspace == 1 ? "YCbCr 4:2:2" : "YCbCr 4:4:4"),
+                   csLabel,
                    published.vidStd,
                    stdiBuf,
                    published.locked ? "" : " [geometry out of range]");

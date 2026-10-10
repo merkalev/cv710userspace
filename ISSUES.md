@@ -690,3 +690,49 @@ Credit: This work builds upon the pioneering research and userspace driver found
 - Aspect-rect fitting and the NEON path compile clean; **hardware validation of
   the NEON converter and the STDI line count still needs the bench** (an ARM64
   Linux box for NEON, a sub-1080p source for STDI/calibration).
+
+---
+
+## 24. Auto-Colorspace Picked BT.709 Full for YCbCr-Limited Sources (CV-25 — FIXED)
+
+### Symptom
+- With auto colorspace enabled (no `-c` override), 60 Hz sources showed
+  `BT.709 Limited` but 24/50 Hz sources showed `BT.709 Full`, even though the
+  HDMI AVI InfoFrame declared colourimetry the same way. Looked like a
+  refresh-rate rule in the app.
+
+### Root Cause
+- There was **no refresh-rate logic at all** - `autoColorspaceForCode()` only
+  looks at the AVI colorspace code (HDMI map `0x53` low nibble) and the source
+  height. The apparent 24/50-vs-60 behaviour came from a **decode mismatch
+  between two layers**:
+  - `UsbStream::queryVideoSignalStatus()` read the raw `0x53` nibble
+    (`0x0` RGB limited, `0x1` RGB full, `0x2/0x3` YCbCr 601/709 limited,
+    `0x6/0x7` YCbCr 601/709 full) but **remapped it into a private 0/1/2 app
+    scheme** (0=RGB, 1=YCbCr 4:2:2, 2=YCbCr full) before storing it in
+    `VideoSignalInfo::aviColorspace`.
+  - `SdlVideoOutput::autoColorspaceForCode()` decoded that stored value as if
+    it were the **raw** `0x53` nibble, where `1` means "RGB full range".
+  - So a source sending YCbCr 4:2:2 **limited** (raw `0x3`) was stored as `1`
+    and decoded as *RGB full* -> **BT.709 Full** instead of BT.709 Limited.
+    Sources sending RGB limited (raw `0x0`, stored `0`) happened to decode
+    correctly. 24/50 Hz material is typically flagged YCbCr 4:2:2, hence the
+    apparent frequency correlation.
+
+### Fix
+- `UsbStream` now stores the **raw** `0x53` nibble in `aviColorspace`,
+  matching the field's documentation and every consumer
+  (`autoColorspaceForCode`, `aviIsRgb`, `autoColorspaceSourceLabel`), which
+  already expected raw codes. The `ADV7604` status-log label was updated to
+  decode raw codes too.
+- Net effect: YCbCr-limited sources (24/50 Hz content, most Blu-ray/game
+  consoles in 4:2:2 mode) now correctly resolve to **BT.709 Limited**;
+  RGB-full / YCbCr-full sources still resolve to Full. No refresh-rate heuristics
+  were added or removed.
+
+### Verification
+- Build clean; existing device_parser (254 assertions) + framebuilder tests pass.
+- **Awaiting hardware confirmation**: plug a 24 Hz or 50 Hz HDMI source that
+  declares YCbCr and confirm the status line reports `Colorspace: YCbCr 709
+  limited` and the OSD/HUD toggles to `BT.709 Limited` (not Full). `C` still
+  overrides manually if desired.

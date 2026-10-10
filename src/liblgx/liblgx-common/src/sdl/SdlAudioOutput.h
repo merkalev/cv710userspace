@@ -19,8 +19,10 @@ namespace sdl {
         void clearAudio() override;
 
         void shutdownAudio() override;
+        void setAudioSampleRate(uint32_t sampleRate) override;
     private:
         SDL_AudioStream *_stream{nullptr};
+        uint32_t _currentSampleRate{48000};
     };
 }
 

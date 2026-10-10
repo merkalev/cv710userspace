@@ -16,6 +16,47 @@ namespace sdl {
         return static_cast<uint8_t>(val);
     }
 
+    namespace {
+        // ADV7604 HDMI map 0x53 low nibble (Linux adv7604.c hdmi_color_space_txt):
+        //   0 RGB limited, 1 RGB full, 2 YCbCr601 limited, 3 YCbCr709 limited,
+        //   6 YCbCr601 full, 7 YCbCr709 full, others xvYCC/sYCC/opRGB/invalid.
+        // The FPGA delivers YUY2, so this selects the inverse matrix + luma range.
+        ColorspaceMode autoColorspaceForCode(uint8_t code, int srcHeight) {
+            bool fullRange;
+            switch (code & 0x0F) {
+                case 0x1:            // RGB full range
+                case 0x6:            // YCbCr 601 full range
+                case 0x7:            // YCbCr 709 full range
+                    fullRange = true;
+                    break;
+                default:             // RGB limited / YCbCr limited / other
+                    fullRange = false;
+                    break;
+            }
+            if (srcHeight <= 576) {
+                return fullRange ? ColorspaceMode::BT601_Full : ColorspaceMode::BT601_Limited;
+            }
+            return fullRange ? ColorspaceMode::BT709_Full : ColorspaceMode::BT709_Limited;
+        }
+
+        bool aviIsRgb(uint8_t code) {
+            code &= 0x0F;
+            return code == 0x0 || code == 0x1;
+        }
+
+        const char *autoColorspaceSourceLabel(uint8_t code) {
+            switch (code & 0x0F) {
+                case 0x0: return "RGB limited";
+                case 0x1: return "RGB full";
+                case 0x2: return "YCbCr 4:2:2";
+                case 0x3: return "YCbCr 4:2:2";
+                case 0x6: return "YCbCr full";
+                case 0x7: return "YCbCr full";
+                default:  return "YCbCr";
+            }
+        }
+    }
+
     const char *SdlVideoOutput::colorspaceName(ColorspaceMode mode) {
         switch (mode) {
             case ColorspaceMode::BT709_Limited: return "BT.709 Limited (HDTV Standard)";
@@ -66,14 +107,15 @@ namespace sdl {
 
     void SdlVideoOutput::updateWindowTitle() {
         if (!_window) return;
-        char title[128];
+        char title[160];
+        const char *modeTag = _colorspaceUserOverride ? "" : " [Auto]";
         if (_targetScale == lgx2::VideoScale::Full) {
-            snprintf(title, sizeof(title), "cv710userspace - %dx%d [%s]",
-                     _srcWidth, _srcHeight, colorspaceShortName(_colorspaceMode));
+            snprintf(title, sizeof(title), "cv710userspace - %dx%d [%s%s]",
+                     _srcWidth, _srcHeight, colorspaceShortName(_colorspaceMode), modeTag);
         } else {
             int div = (_targetScale == lgx2::VideoScale::Half) ? 2 : 4;
-            snprintf(title, sizeof(title), "cv710userspace - %dx%d (1/%d) [%s]",
-                     _srcWidth, _srcHeight, div, colorspaceShortName(_colorspaceMode));
+            snprintf(title, sizeof(title), "cv710userspace - %dx%d (1/%d) [%s%s]",
+                     _srcWidth, _srcHeight, div, colorspaceShortName(_colorspaceMode), modeTag);
         }
         SDL_SetWindowTitle(_window, title);
     }
@@ -165,6 +207,7 @@ namespace sdl {
     void SdlVideoOutput::setColorspace(ColorspaceMode mode) {
         ColorspaceMode oldMode = _colorspaceMode;
         _colorspaceMode = mode;
+        _colorspaceUserOverride = true;
         if ((oldMode == ColorspaceMode::Direct_YUY2) != (_colorspaceMode == ColorspaceMode::Direct_YUY2)) {
             updateTextureFormat();
         }
@@ -172,7 +215,42 @@ namespace sdl {
     }
 
     void SdlVideoOutput::setColorspace(const std::string &name) {
-        setColorspace(parseColorspace(name));
+        if (name == "auto") {
+            _colorspaceUserOverride = false;
+            ColorspaceMode autoMode = autoColorspaceForCode(_metrics.signalInfo.aviColorspace, _srcHeight);
+            ColorspaceMode oldMode = _colorspaceMode;
+            _colorspaceMode = autoMode;
+            if ((oldMode == ColorspaceMode::Direct_YUY2) != (_colorspaceMode == ColorspaceMode::Direct_YUY2)) {
+                updateTextureFormat();
+            }
+            updateWindowTitle();
+        } else {
+            setColorspace(parseColorspace(name));
+            _colorspaceUserOverride = true;
+        }
+    }
+
+    void SdlVideoOutput::updateMetrics(const lgx2::DisplayMetrics &metrics) {
+        _metrics = metrics;
+
+        if (!_colorspaceUserOverride) {
+            ColorspaceMode autoMode = autoColorspaceForCode(metrics.signalInfo.aviColorspace, _srcHeight);
+
+            if (autoMode != _colorspaceMode) {
+                ColorspaceMode oldMode = _colorspaceMode;
+                _colorspaceMode = autoMode;
+                if ((oldMode == ColorspaceMode::Direct_YUY2) != (_colorspaceMode == ColorspaceMode::Direct_YUY2)) {
+                    updateTextureFormat();
+                }
+                updateWindowTitle();
+                _showOsd = true;
+                _osdTimestamp = std::chrono::steady_clock::now();
+                printf("[Video] Auto-selected colorspace from AVI InfoFrame: %s (%s)\n",
+                       colorspaceName(_colorspaceMode),
+                       autoColorspaceSourceLabel(metrics.signalInfo.aviColorspace));
+                fflush(stdout);
+            }
+        }
     }
 
     void SdlVideoOutput::convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int srcWidth, int dstWidth, int dstHeight, int step) {
@@ -242,12 +320,35 @@ namespace sdl {
                         y1 = (word >> 24) & 0xFF;
                     }
 
+                    // CV-09: co-sited chroma reconstruction as documented in ISSUES.md.
+                    // Chroma sits on the even luma pixel (Y0); the odd pixel (Y1) uses
+                    // chroma linearly interpolated halfway to the next macropixel's.
+                    // At the end of a row there is no next macropixel, so the current
+                    // chroma is replicated.
+                    uint8_t uNext = u, vNext = v;
+                    if (x + 1 < pairsPerDstRow) {
+                        uint32_t nextWord = srcRow[(x + 1) * step];
+                        if (!swapChroma) {
+                            uNext = (nextWord >> 8) & 0xFF;
+                            vNext = (nextWord >> 24) & 0xFF;
+                        } else {
+                            uNext = nextWord & 0xFF;
+                            vNext = (nextWord >> 16) & 0xFF;
+                        }
+                    }
+
                     int u_val = static_cast<int>(u) - 128;
                     int v_val = static_cast<int>(v) - 128;
+                    int u_valOdd = (static_cast<int>(u) + static_cast<int>(uNext) + 1) / 2 - 128;
+                    int v_valOdd = (static_cast<int>(v) + static_cast<int>(vNext) + 1) / 2 - 128;
 
-                    int r_off = cRV * v_val;
-                    int g_off = -(cGU * u_val + cGV * v_val);
-                    int b_off = cBU * u_val;
+                    int r_off  = cRV * v_val;
+                    int g_off  = -(cGU * u_val + cGV * v_val);
+                    int b_off  = cBU * u_val;
+
+                    int r_off1 = cRV * v_valOdd;
+                    int g_off1 = -(cGU * u_valOdd + cGV * v_valOdd);
+                    int b_off1 = cBU * u_valOdd;
 
                     int y0_scaled = cY * (static_cast<int>(y0) - y_off) + 32768;
                     int y1_scaled = cY * (static_cast<int>(y1) - y_off) + 32768;
@@ -256,9 +357,9 @@ namespace sdl {
                     uint8_t g0 = clamp8((y0_scaled + g_off) >> 16);
                     uint8_t b0 = clamp8((y0_scaled + b_off) >> 16);
 
-                    uint8_t r1 = clamp8((y1_scaled + r_off) >> 16);
-                    uint8_t g1 = clamp8((y1_scaled + g_off) >> 16);
-                    uint8_t b1 = clamp8((y1_scaled + b_off) >> 16);
+                    uint8_t r1 = clamp8((y1_scaled + r_off1) >> 16);
+                    uint8_t g1 = clamp8((y1_scaled + g_off1) >> 16);
+                    uint8_t b1 = clamp8((y1_scaled + b_off1) >> 16);
 
                     // SDL_PIXELFORMAT_RGBA32 in memory (little-endian): R, G, B, A
                     dstRow[x * 2]     = 0xFF000000u | (static_cast<uint32_t>(b0) << 16) | (static_cast<uint32_t>(g0) << 8) | r0;
@@ -316,6 +417,9 @@ namespace sdl {
             _srcHeight = static_cast<int>(height);
             _texWidth = targetW;
             _texHeight = targetH;
+            if (!_colorspaceUserOverride) {
+                _colorspaceMode = autoColorspaceForCode(_metrics.signalInfo.aviColorspace, _srcHeight);
+            }
             updateTextureFormat();
             updateWindowTitle();
             _showOsd = true;
@@ -380,20 +484,52 @@ namespace sdl {
                 SDL_SetWindowFullscreen(_window, false);
             }
 
+            // Tab or O key: toggle persistent diagnostic HUD
+            if (keyboardState[SDL_SCANCODE_TAB] || keyboardState[SDL_SCANCODE_O]) {
+                if (!_hudTogglePressed) {
+                    _hudTogglePressed = true;
+                    _hudPersistent = !_hudPersistent;
+                    _showOsd = true;
+                    _osdTimestamp = now;
+                    printf("[Video] Diagnostic HUD: %s\n", _hudPersistent ? "ON" : "OFF");
+                    fflush(stdout);
+                }
+            } else {
+                _hudTogglePressed = false;
+            }
+
             // 'C' key: cycle colorspace mode (debounced)
             if (keyboardState[SDL_SCANCODE_C]) {
                 if (!_cKeyPressed) {
                     _cKeyPressed = true;
                     ColorspaceMode oldMode = _colorspaceMode;
-                    _colorspaceMode = static_cast<ColorspaceMode>(
-                        (static_cast<int>(_colorspaceMode) + 1) % static_cast<int>(ColorspaceMode::Count));
+
+                    if (!_colorspaceUserOverride) {
+                        // Switch from Auto to manual BT709 Limited
+                        _colorspaceUserOverride = true;
+                        _colorspaceMode = ColorspaceMode::BT709_Limited;
+                    } else if (_colorspaceMode == ColorspaceMode::Direct_YUY2) {
+                        // Cycled past all manual modes: return to Auto
+                        _colorspaceUserOverride = false;
+                        _colorspaceMode = autoColorspaceForCode(_metrics.signalInfo.aviColorspace, _srcHeight);
+                    } else {
+                        // Next manual mode
+                        _colorspaceMode = static_cast<ColorspaceMode>(static_cast<int>(_colorspaceMode) + 1);
+                        _colorspaceUserOverride = true;
+                    }
+
                     if ((oldMode == ColorspaceMode::Direct_YUY2) != (_colorspaceMode == ColorspaceMode::Direct_YUY2)) {
                         updateTextureFormat();
                     }
                     updateWindowTitle();
                     _showOsd = true;
                     _osdTimestamp = now;
-                    printf("[Video] Switched colorspace to: %s\n", colorspaceName(_colorspaceMode));
+
+                    if (!_colorspaceUserOverride) {
+                        printf("[Video] Switched colorspace to: Auto (HDMI InfoFrame: %s)\n", colorspaceName(_colorspaceMode));
+                    } else {
+                        printf("[Video] Switched colorspace to: %s (Manual Override)\n", colorspaceName(_colorspaceMode));
+                    }
                     fflush(stdout);
                 }
             } else {
@@ -401,78 +537,167 @@ namespace sdl {
             }
         }
 
-        if (!_hasSignal) {
+        uint8_t hudAlpha = 0;
+        if (_hudPersistent) {
+            hudAlpha = 255;
+        } else if (_showOsd) {
+            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - _osdTimestamp).count();
+            if (elapsedMs < 2500) {
+                if (elapsedMs <= 1800) {
+                    hudAlpha = 255;
+                } else {
+                    float fade = 1.0f - static_cast<float>(elapsedMs - 1800) / 700.0f;
+                    if (fade < 0.0f) fade = 0.0f;
+                    hudAlpha = static_cast<uint8_t>(255.0f * fade);
+                }
+            } else {
+                _showOsd = false;
+            }
+        }
+
+        // A splash is shown when no frames are arriving, but also when the
+        // ADV7604 reports that HDMI is not locked. Without the lock check, the
+        // receiver's free-run pattern (typically 720x576) would be mistaken for
+        // a real signal and suppress the "no signal" splash.
+        const bool noRealSignal = !_hasSignal ||
+            (_metrics.signalInfo.valid && !_metrics.signalInfo.locked);
+
+        if (noRealSignal) {
             if (now - _lastSplashRender >= std::chrono::milliseconds(33)) {
                 _lastSplashRender = now;
                 renderSplashScreen();
+                if (hudAlpha > 0) {
+                    renderDiagnosticHud(hudAlpha);
+                }
+                SDL_RenderPresent(_renderer);
             }
             return;
         }
 
-        if (_newFrameAvailable || _showOsd) {
+        bool shouldRender = _newFrameAvailable;
+        if (!shouldRender && hudAlpha > 0 && (now - _lastHudRender >= std::chrono::milliseconds(33))) {
+            shouldRender = true;
+            _lastHudRender = now;
+        }
+
+        if (shouldRender) {
             SDL_RenderTexture(_renderer, _texture, nullptr, nullptr);
 
-            // Render sleek modern HUD badge if active
-            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - _osdTimestamp).count();
-            if (_showOsd && elapsedMs < 2500) {
-                uint8_t alpha = 255;
-                if (elapsedMs > 1800) {
-                    float fade = 1.0f - static_cast<float>(elapsedMs - 1800) / 700.0f;
-                    if (fade < 0.0f) fade = 0.0f;
-                    alpha = static_cast<uint8_t>(255.0f * fade);
-                }
-
-                int winW = 1920, winH = 1080;
-                SDL_GetWindowSize(_window, &winW, &winH);
-
-                float cardW = 390.0f;
-                float cardH = 56.0f;
-                float cardX = static_cast<float>(winW) - cardW - 24.0f;
-                float cardY = 24.0f;
-
-                SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
-
-                // Main card background (deep translucent obsidian)
-                SDL_FRect bgRect{cardX, cardY, cardW, cardH};
-                SDL_SetRenderDrawColor(_renderer, 16, 20, 28, static_cast<uint8_t>(alpha * 225 / 255));
-                SDL_RenderFillRect(_renderer, &bgRect);
-
-                // Subtle card border
-                SDL_SetRenderDrawColor(_renderer, 60, 75, 95, static_cast<uint8_t>(alpha * 180 / 255));
-                SDL_RenderRect(_renderer, &bgRect);
-
-                // Accent bar on the left edge
-                SDL_FRect accentRect{cardX, cardY, 4.0f, cardH};
-                uint8_t accR = 0, accG = 180, accB = 216; // BT709 Limited Cyan
-                switch (_colorspaceMode) {
-                    case ColorspaceMode::BT709_Full:    accR = 255; accG = 183; accB = 3;   break; // Amber
-                    case ColorspaceMode::BT601_Limited: accR = 6;   accG = 214; accB = 160; break; // Emerald
-                    case ColorspaceMode::BT601_Full:    accR = 138; accG = 201; accB = 38;  break; // Lime
-                    case ColorspaceMode::UYVY_Swap:     accR = 157; accG = 78;  accB = 221; break; // Violet
-                    case ColorspaceMode::Direct_YUY2:   accR = 58;  accG = 134; accB = 255; break; // Blue
-                    default: break;
-                }
-                SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);
-                SDL_RenderFillRect(_renderer, &accentRect);
-
-                // Line 1: Mode title (rendered at 1.0f scale: crisp native font)
-                SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
-                SDL_SetRenderDrawColor(_renderer, 255, 255, 255, alpha);
-                SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 12.0f, colorspaceTitle(_colorspaceMode));
-
-                // Line 2: Details (source resolution + technical subtitle)
-                char detailBuf[160];
-                snprintf(detailBuf, sizeof(detailBuf), "%ux%u | %s",
-                         _srcWidth, _srcHeight, colorspaceSubtitle(_colorspaceMode));
-                SDL_SetRenderDrawColor(_renderer, 160, 185, 215, static_cast<uint8_t>(alpha * 210 / 255));
-                SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 34.0f, detailBuf);
-            } else if (_showOsd) {
-                _showOsd = false;
+            if (hudAlpha > 0) {
+                renderDiagnosticHud(hudAlpha);
             }
 
             SDL_RenderPresent(_renderer);
             _newFrameAvailable = false;
         }
+    }
+
+    void SdlVideoOutput::renderDiagnosticHud(uint8_t alpha) {
+        if (!_renderer || alpha == 0) return;
+
+        int winW = 1920, winH = 1080;
+        SDL_GetWindowSize(_window, &winW, &winH);
+
+        float cardW = 440.0f;
+        float cardH = 118.0f;
+        float cardX = static_cast<float>(winW) - cardW - 20.0f;
+        if (cardX < 10.0f) cardX = 10.0f;
+        float cardY = 20.0f;
+
+        SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
+
+        // Main card background (deep translucent obsidian)
+        SDL_FRect bgRect{cardX, cardY, cardW, cardH};
+        SDL_SetRenderDrawColor(_renderer, 14, 18, 25, static_cast<uint8_t>(alpha * 230 / 255));
+        SDL_RenderFillRect(_renderer, &bgRect);
+
+        // Subtle card border (slate grey)
+        SDL_SetRenderDrawColor(_renderer, 55, 70, 90, static_cast<uint8_t>(alpha * 200 / 255));
+        SDL_RenderRect(_renderer, &bgRect);
+
+        // Accent bar on left edge reflecting colorspace mode
+        SDL_FRect accentRect{cardX, cardY, 4.0f, cardH};
+        uint8_t accR = 0, accG = 180, accB = 216; // BT709 Limited Cyan
+        switch (_colorspaceMode) {
+            case ColorspaceMode::BT709_Full:    accR = 255; accG = 183; accB = 3;   break; // Amber
+            case ColorspaceMode::BT601_Limited: accR = 6;   accG = 214; accB = 160; break; // Emerald
+            case ColorspaceMode::BT601_Full:    accR = 138; accG = 201; accB = 38;  break; // Lime
+            case ColorspaceMode::UYVY_Swap:     accR = 157; accG = 78;  accB = 221; break; // Violet
+            case ColorspaceMode::Direct_YUY2:   accR = 58;  accG = 134; accB = 255; break; // Blue
+            default: break;
+        }
+        SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);
+        SDL_RenderFillRect(_renderer, &accentRect);
+
+        // Subtle divider line under header
+        SDL_FRect sepRect{cardX + 14.0f, cardY + 25.0f, cardW - 28.0f, 1.0f};
+        SDL_SetRenderDrawColor(_renderer, 45, 58, 75, static_cast<uint8_t>(alpha * 180 / 255));
+        SDL_RenderFillRect(_renderer, &sepRect);
+
+        // Header Left: Device title
+        SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
+        SDL_SetRenderDrawColor(_renderer, 240, 245, 255, alpha);
+        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 11.0f, "AVerMedia CV710 (ExtremeCap U3)");
+
+        // Header Right: Status badge. Prefer the ADV7604 lock state (authoritative
+        // for "is there really an HDMI signal?") over mere frame arrival, which can
+        // be the receiver's free-run pattern when nothing is connected.
+        if (_metrics.signalInfo.valid && _metrics.signalInfo.locked) {
+            SDL_SetRenderDrawColor(_renderer, 76, 214, 100, alpha);
+            SDL_RenderDebugText(_renderer, cardX + cardW - 120.0f, cardY + 11.0f, "[ TMDS LOCK ]");
+        } else if (_metrics.signalInfo.valid) {
+            SDL_SetRenderDrawColor(_renderer, 255, 170, 50, alpha);
+            SDL_RenderDebugText(_renderer, cardX + cardW - 120.0f, cardY + 11.0f, "[ NO SIGNAL ]");
+        } else if (_hasSignal) {
+            SDL_SetRenderDrawColor(_renderer, 0, 200, 255, alpha);
+            SDL_RenderDebugText(_renderer, cardX + cardW - 120.0f, cardY + 11.0f, "[ STREAMING ]");
+        } else {
+            SDL_SetRenderDrawColor(_renderer, 255, 170, 50, alpha);
+            SDL_RenderDebugText(_renderer, cardX + cardW - 120.0f, cardY + 11.0f, "[ NO SIGNAL ]");
+        }
+
+        // Line 1: Video mode (Resolution and hardware refresh rate)
+        char videoBuf[128];
+        float hwFps = _metrics.signalInfo.measuredFps > 0.0f ? _metrics.signalInfo.measuredFps : 60.0f;
+        snprintf(videoBuf, sizeof(videoBuf), "Video: %ux%u%s @ %.2f Hz",
+                 _srcWidth, _srcHeight,
+                 _metrics.signalInfo.interlaced ? "i" : "p",
+                 hwFps);
+        SDL_SetRenderDrawColor(_renderer, 180, 215, 245, static_cast<uint8_t>(alpha * 220 / 255));
+        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 31.0f, videoBuf);
+
+        // Line 2: Colorspace mode and source info
+        char colorBuf[128];
+        const char *csTag = _colorspaceUserOverride ? "Manual" :
+            (aviIsRgb(_metrics.signalInfo.aviColorspace) ? "Auto: RGB" : "Auto: YCbCr");
+        snprintf(colorBuf, sizeof(colorBuf), "Color: %s (%s)",
+                 colorspaceShortName(_colorspaceMode), csTag);
+        SDL_SetRenderDrawColor(_renderer, 210, 225, 240, static_cast<uint8_t>(alpha * 220 / 255));
+        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 47.0f, colorBuf);
+
+        // Line 3: Audio status and sample rate
+        char audioBuf[128];
+        float audKhz = static_cast<float>(_metrics.signalInfo.audioSampleRate) / 1000.0f;
+        snprintf(audioBuf, sizeof(audioBuf), "Audio: %.1f kHz Stereo PCM (%s)",
+                 audKhz > 0.0f ? audKhz : 48.0f,
+                 _metrics.signalInfo.audioLocked ? "Locked" : "Unlocked");
+        if (_metrics.signalInfo.audioLocked) {
+            SDL_SetRenderDrawColor(_renderer, 120, 220, 160, static_cast<uint8_t>(alpha * 220 / 255));
+        } else {
+            SDL_SetRenderDrawColor(_renderer, 220, 170, 110, static_cast<uint8_t>(alpha * 200 / 255));
+        }
+        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 63.0f, audioBuf);
+
+        // Line 4: Host capture performance (FPS, valid frames, drops)
+        char perfBuf[128];
+        snprintf(perfBuf, sizeof(perfBuf), "Capture: %.1f fps | Valid: %u | Drops: %u",
+                 _metrics.liveFps, _metrics.validFrames, _metrics.droppedFrames);
+        SDL_SetRenderDrawColor(_renderer, 235, 215, 165, static_cast<uint8_t>(alpha * 220 / 255));
+        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 79.0f, perfBuf);
+
+        // Line 5: Hotkeys guide
+        SDL_SetRenderDrawColor(_renderer, 115, 140, 170, static_cast<uint8_t>(alpha * 190 / 255));
+        SDL_RenderDebugText(_renderer, cardX + 16.0f, cardY + 97.0f, "[Tab/O] HUD  [C] Color  [F/G] Fullscreen");
     }
 
     void SdlVideoOutput::loadSplashBitmaps() {
@@ -552,12 +777,11 @@ namespace sdl {
 
             SDL_SetRenderScale(_renderer, 1.5f, 1.5f);
             SDL_SetRenderDrawColor(_renderer, 160, 174, 192, 255);
-            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 175.0f) / 1.5f, "Waiting for 1080p HDMI video input...");
+            SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 175.0f) / 1.5f, "Waiting for HDMI video input...");
             SDL_RenderDebugText(_renderer, (cardX + 40.0f) / 1.5f, (cardY + 210.0f) / 1.5f, "Audio output muted until video sync locks.");
         }
 
         SDL_SetRenderScale(_renderer, 1.0f, 1.0f);
-        SDL_RenderPresent(_renderer);
     }
 
     void SdlVideoOutput::shutdownVideo() {

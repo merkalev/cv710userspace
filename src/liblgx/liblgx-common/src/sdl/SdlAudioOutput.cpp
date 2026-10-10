@@ -11,7 +11,7 @@ namespace sdl {
 
     void SdlAudioOutput::initialiseAudio() {
         SDL_AudioSpec spec{};
-        spec.freq     = 48000;
+        spec.freq     = static_cast<int>(_currentSampleRate);
         spec.format   = SDL_AUDIO_S16LE;
         spec.channels = 2;
 
@@ -20,6 +20,20 @@ namespace sdl {
             throw std::runtime_error(SDL_GetError());
         }
         SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(_stream));
+    }
+
+    void SdlAudioOutput::setAudioSampleRate(uint32_t sampleRate) {
+        if (sampleRate == 0 || sampleRate == _currentSampleRate) return;
+        _currentSampleRate = sampleRate;
+        if (_stream) {
+            SDL_AudioSpec srcSpec{};
+            srcSpec.format = SDL_AUDIO_S16LE;
+            srcSpec.channels = 2;
+            srcSpec.freq = static_cast<int>(sampleRate);
+            SDL_SetAudioStreamFormat(_stream, &srcSpec, nullptr);
+            printf("[Audio] Output sample rate dynamically switched to: %u Hz\n", sampleRate);
+            fflush(stdout);
+        }
     }
 
     void SdlAudioOutput::audioFrameAvailable(uint32_t *audio, uint32_t byteLength) {

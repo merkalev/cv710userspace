@@ -180,3 +180,221 @@ Credit: This work builds upon the pioneering research and userspace driver found
   - Odd pixel ($2k + 1$): linearly interpolates chroma halfway between $(U_k, V_k)$ and $(U_{k+1}, V_{k+1})$:
     $U_{odd} = (U_k + U_{next} + 1) / 2$, $V_{odd} = (V_k + V_{next} + 1) / 2$.
 - Eliminates the 1-pixel rightward chroma offset and provides clean, razor-sharp color transitions across all software conversion modes.
+
+
+
+
+
+
+
+
+
+
+
+
+---
+
+## 9. 60 Hz Detected as 50 Hz (RESOLVED)
+
+### Symptoms Previously Observed
+- The HUD reported 50 Hz for sources that were actually 60 Hz (notably 720p60, whose
+  pixel clock of 74.25 MHz is identical to 720p50).
+
+### Root Cause
+- The refresh rate was inferred from HDMI map `0x05` bit 4, which is the **VSYNC polarity**
+  bit, not a 50 Hz indicator. When VSYNC was positive the code forced `50.0f`.
+
+### Resolution
+- The refresh rate is now computed from the pixel clock (HDMI `0x06` + fractional bits in
+  `0x3B`, adjusted for deep colour and pixel repetition) divided by the horizontal and
+  vertical totals read from the porch registers (masks per `drivers/media/i2c/adv7604.c`).
+  The raw value is snapped to the nearest standard rate (23.98/24/25/29.97/30/50/59.94/60/
+  100/119.88/120). Because the horizontal total differs between 720p50 and 720p60, the two
+  are now distinguished correctly. Interlaced sources report the conventional field rate.
+
+---
+
+## 10. No Input Shows 720x576 / No Splash / No Signal Message (RESOLVED)
+
+### Symptoms Previously Observed
+- With no HDMI source connected, the preview showed a 720x576 frame instead of the
+  "no signal" splash, and no "[ NO SIGNAL ]" indicator appeared.
+
+### Root Cause
+- The ADV7604 free-runs a default video pattern (typically 720x576) when TMDS is not locked.
+  The parser accepted those frames as real video (`_hasSignal = true`), which suppressed the
+  splash; the geometry was additionally misread (see audit F-03), so the lock state was
+  unreliable.
+
+### Resolution
+- `VideoSignalInfo::valid` marks the first successful status snapshot; the splash is now shown
+  whenever the receiver is not TMDS-locked (`valid && !locked`) in addition to the existing
+  frame-arrival watchdog. The status/lock registers were corrected (IO `0x6A & 0xE0` for lock,
+  IO `0x12 & 0x10` for interlace, `0x0F` high-byte masks), and the HUD status badge now uses
+  the lock state. The procedural fallback card is shown when the BMP asset cannot be loaded.
+
+---
+
+## 11. Interlaced Video Still Rendered Half-Height (FIXED — pending hardware check)
+
+### Symptoms Previously Observed
+- 1080i (and by extension 576i/480i) was still not woven after the first parity fix: the field
+  was shown as a squashed half-height picture instead of a full frame.
+
+### Root Cause
+- `detectVideoMode` decided scan mode from the ADV7604 STDI interlace bit (IO `0x12 & 0x10`)
+  alone. When that bit reads `0` for an interlaced field, the adaptive geometry path matches
+  `1920 x 540` (the field) as a valid **progressive** mode, so the weave branch was never
+  reached and the interlaced field was displayed directly.
+
+### Resolution
+- The FPGA's own `C0` field flag (`b2 & 0x80`, documented in `PROTOCOL.md`) is now the primary
+  scan-mode source, ORed with the receiver bit. When both flags are clear, the per-field
+  word-count ranges (1080i ~518,400; 576i ~103,680; 480i ~86,400 words) are used as a
+  tie-breaker, since they are disjoint from every progressive mode's word count.
+- The field height is derived from the observed word count (`fieldH = frameWords * 2 / width`),
+  so it no longer matters whether the receiver reports the field height (540) or the full frame
+  height (1080).
+- Weave parity still honours the `b2 & 0x01` field index once it is seen to alternate, and falls
+  back to a local toggle otherwise. The opposite parity slot is used if one field is dropped, so
+  the weave can no longer stall on a black frame. A `Woven interlaced frame` diagnostic prints
+  the geometry and flags periodically.
+
+---
+
+## 12. Audio Detuned / "Depressing" After Repeated HDMI Reconnects (FIXED)
+
+### Symptoms Previously Observed
+- After several HDMI unplug/replug cycles, audio played at the wrong pitch (slow/"depressing"),
+  and was only corrected by a full re-bootstrap or relaunching the app.
+
+### Root Cause
+- The code decoded HDMI map `0x18` (`audFreqByte`) as an IEC 60958 sample-rate code. Per
+  `drivers/media/i2c/adv7604.c`, bit 0 of `0x18` is only the "audio sample packet detected"
+  flag; the low nibble is **not** a rate. Flaky reads latched random 32/44.1/48 kHz values, and
+  `SDL_SetAudioStreamFormat` then resampled the stream to the wrong pitch. `audioLocked` also
+  checked only the PLL bit, not packet detect.
+
+### Resolution
+- The sample rate now comes from the received **Audio InfoFrame** on the INFOFRAME page
+  (slave `0x3e`, head `0xE3`, payload `0x1C`); the rate is payload byte 1 bits 4:2 (CEA-861 /
+  Linux `hdmi_audio_infoframe_unpack`). If the infoframe is absent or unreadable, the last
+  known-good rate is kept (sanitised to 48 kHz) instead of inventing one.
+- `audioLocked` now requires **both** HDMI `0x04` bit 0 (PLL locked) and HDMI `0x18` bit 0
+  (sample packet detected).
+
+---
+
+## 13. Tearing / "Freaky" Picture While Wiggling the HDMI Cable (FIXED)
+
+### Symptoms Previously Observed
+- Bumping or wiggling the HDMI connector produced tearing/combing on this driver, while the
+  official driver showed no noticeable glitches.
+
+### Root Cause
+- While the HDMI clock re-locks, the FPGA emits a partial, adjusting frame. The parser padded
+  and presented it, so torn/partial scanlines appeared.
+
+### Resolution
+- The `C1` trailer `b2` bit 4 is the FPGA "HDMI clock / PLL recovering" flag (`0x14` while
+  recovering vs `0x04` locked, per `PROTOCOL.md`). Frames carrying that flag are now dropped
+  (video buffer and weave state cleared, audio unmute counter reset) and the parser
+  resynchronises on the next `C0`, so no partial frame reaches the display.
+
+---
+
+## 14. Slow Startup / Full Bootstrap Replay on Every Launch (CV-15 — FIXED via --fast-start)
+
+### Symptom Previously Observed
+- Every launch replays the entire captured bootstrap: 4301 OUT + 2807 IN ≈ 7100 USB
+  transfers. Most of that is I2C status polling and repeated register writes, so startup
+  takes seconds while the official (resident kernel) driver appears instant.
+
+### Why the full replay existed
+- Skipping bootstrap on a "warm" start left the HDMI source with a stale/limited mode
+  list and, after reconnects, drifting audio, until the cable was physically replugged.
+  A full replay guarantees the 256-byte EDID is re-uploaded and the receiver's hot-plug
+  handshake is re-run so the source re-reads all modes.
+
+### Resolution (intent-based fast path, opt-in)
+- `tools/trim_bootstrap.py` derives `cv710_setup_commands_fast` from the capture:
+  1. **Drops every I2C status-read round-trip** (`>02...` request + `<N` response).
+     Reads are passive and the subsequent write values are verbatim capture bytes,
+     so final state cannot change.
+  2. **Collapses the driver's poll loops** (runs of identical pure-I2C-write blocks,
+     e.g. 63x writing 0x00 to a row of status registers) to one copy. Same value to
+     the same register repeatedly is idempotent, so final register state is identical.
+  3. **Keeps all FPGA/FX3 vendor commands** (0x03/0x05/0x06/0x07/0x08/0x09/0x0B/0x0E)
+     and their request/response pairs untouched and in order.
+- Result: 7108 → 871 transfers (≈8.2x), same write sequence, same end state, still
+  uploads the full EDID and still re-runs the HPD handshake.
+- `--fast-start` (`-b`) selects the trimmed bootstrap and is the **default**;
+  `--full-bootstrap` (`-B`) forces the original capture replay (~4.6 s vs ~0.6 s).
+
+### Follow-up measurement (2026-10-10) — the real cost was clear_halt, not the command count
+- Per-command instrumentation showed the 871-command loop totals **only ~508 ms**, yet
+  the bootstrap wall time was **10 994 ms**. The entire gap was `libusb_clear_halt()`
+  on EP 0x83: **~5.2 s per call**, called twice per bootstrap (prep + post) plus once
+  at shutdown. That fixed ~10.4 s per launch was present in *both* the full and fast
+  paths, which is why `--fast-start` "felt like the same speed".
+- On this device a CLEAR_FEATURE(ENDPOINT_HALT) control request takes ~5 s to be
+  answered, and it is pure overhead when the endpoint is not halted (the normal case).
+- **Fix:** removed all three unconditional `libusb_clear_halt()` calls (bootstrap prep,
+  bootstrap post, shutdown drain). Genuine halts still surface as
+  `LIBUSB_TRANSFER_STALL` during streaming and are recovered by the existing CV-12
+  path (`serviceStalledTransfers()`, on the main thread, bounded retries).
+- Expected result: `Bootstrapping complete (871 commands, ~600 ms)`.
+
+### State preservation (item 1)
+- Shutdown clears only the FPGA stream-enable bit and resets FX3 stream DMA. It never
+  touches the ADV7604 or its EDID RAM; there is no `libusb_reset_device` and
+  `set_configuration` is skipped when already set, so receiver config + EDID persist
+  across app restarts while the device stays powered. The fast path re-establishes the
+  source-visible state in ~1/8 the transfers regardless.
+
+### What to check on hardware
+- `Bootstrapping device (fast EDID/HPD initialisation, 871 commands)...` then
+  `Bootstrapping complete (871 commands, N ms)` with **N ≈ 0.5-1 s** (was ~11 s).
+- Source resolution list still contains all modes (no replug needed).
+- Picture, audio, 1080i weave, HDMI-wiggle behaviour identical to the full path.
+- A genuinely halted endpoint (e.g. after a crash mid-stream) still recovers via the
+  CV-12 stall path - the `[USB] Endpoint stalled; deferring halt recovery to the main
+  loop` + `[USB] Endpoint recovered from stall; resubmitting N transfer(s)` logs.
+
+---
+
+## 15. Misaligned Lines for a Second After a Resolution Switch (FIXED)
+
+### Symptom Sometimes Observed
+- Switching resolution / refresh (e.g. 1080p -> 720p) shows a brief spell (~1 s) of
+  horizontally shifted / wrapped "misaligned lines", which then clears by itself.
+  Occurs occasionally, not on every switch.
+
+### Root Cause
+- Every `0xC0000000` / `0xC1000000` marker word is validated before ending/starting a
+  frame, but the *failure* path treated the marker as **pixel data** and accumulated it
+  into the video buffer. A rejected frame-start or frame-end marker therefore shifted
+  every remaining scanline by 2 words (4 px), wrapping the row stride - the classic
+  "misaligned lines" artifact from devlog 01.
+- During a resolution switch / HDMI clock recovery the stream contains corrupt/
+  transitional bytes, so a marker metadata word occasionally fails its checksum. The
+  resulting frame kept its (roughly in-range) word count long enough to pass the mode
+  ranges, so the shifted frame reached the display. It self-healed on the next clean
+  C0 - hence "for a second, happens sometimes".
+
+### Resolution
+- `Device::onFrameData` no longer absorbs rejected markers:
+  - A **non-genuine C0** (metadata fails `b1 == 0x01` or checksum) now discards the
+    in-progress frame, clears `_inVideo`, and resynchronises on the next genuine C0.
+  - A **lone C1** (trailer fails checksum / `tb1 == 0x02` / sequence, or frame size
+    < 40000 words) likewise ends and discards the partial frame instead of treating the
+    marker as pixels.
+- Both count as dropped frames and reset the audio-unmute counter, consistent with the
+  other drop paths. Geometry is now locked to genuine marker boundaries only; a shifted
+  frame can no longer pass the word-count check and reach the display.
+
+### What to check on hardware
+- Switch resolution / refresh several times in a row (and from standby to signal). No
+  misaligned/shifted frame should appear; worst case is one clean dropped frame at the
+  transition, and audio must not go out of tune (unmute gate unchanged).
+

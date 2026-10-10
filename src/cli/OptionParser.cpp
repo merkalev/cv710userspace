@@ -29,7 +29,14 @@ lgx2::VideoScale app::OptionParser::scale() {
 bool app::OptionParser::process(int argc, char **argv) {
     for(;;)
     {
-        switch(getopt(argc, argv, "vVd:hsgfS:c:i:"))
+        // CV-15/fast-start: long aliases so the trimmed bootstrap can be
+        // selected explicitly. Default is the full capture.
+        static struct option longOptions[] = {
+            {"fast-start",     no_argument, 0, 'b'},
+            {"full-bootstrap", no_argument, 0, 'B'},
+            {0, 0, 0, 0}
+        };
+        switch(getopt_long(argc, argv, "vVd:hsgfS:c:i:bB", longOptions, nullptr))
         {
 #ifndef __MINGW32__
 #ifndef __APPLE__
@@ -53,6 +60,15 @@ bool app::OptionParser::process(int argc, char **argv) {
                 continue;
             case 's':
                 _videoOutput = new NullVideoOutput();
+                continue;
+            case 'b':
+                _fastBootstrap = true;
+                std::cout << "Using fast bootstrap (I2C status polls and poll-loop "
+                             "duplicates removed; same final register state)" << std::endl;
+                continue;
+            case 'B':
+                _fastBootstrap = false;
+                std::cout << "Using full bootstrap (complete capture replay)" << std::endl;
                 continue;
             case 'g':
                 _audioOutput = new NullAudioOutput();
@@ -95,8 +111,10 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t-g Output video only\n"
                     "\t-f Use a fake USB stream containing unprocessed frames from a dump.bin file\n"
                     "\t-S SCALE\tSpecify the output scaling (1, 2, 4)\n"
-                    "\t-c COLORSPACE\tSpecify initial colorspace (bt709, bt709full, bt601, bt601full, uyvy, yuy2)\n"
-                    "\t-i INPUT\tSpecify initial video input source (hdmi)\n";
+                    "\t-c COLORSPACE\tSpecify initial colorspace (auto, bt709, bt709full, bt601, bt601full, uyvy, yuy2)\n"
+                    "\t-i INPUT\tSpecify initial video input source (hdmi)\n"
+                    "\t-b, --fast-start\tUse the trimmed bootstrap (default; same final register state)\n"
+                    "\t-B, --full-bootstrap\tForce the full capture replay (slow: ~7100 transfers)\n";
                 return false;
             case -1:
                 break;

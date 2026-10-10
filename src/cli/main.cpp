@@ -7,7 +7,9 @@
 #include "OptionParser.h"
 #include "../version.h"
 
-bool do_exit = false;
+// CV-16: written from SIGINT/SIGTERM handlers and read by the main loop, so it
+// must be a signal-safe type rather than a plain bool.
+volatile std::sig_atomic_t do_exit = 0;
 
 int main(int argc, char **argv) {
     std::cout << "cv710userspace " << APP_VERSION << " ("<< GIT_BRANCH << "-" << GIT_REV << " - " << GIT_TAG << ")" << std::endl;
@@ -26,6 +28,7 @@ int main(int argc, char **argv) {
     if (stream == nullptr) {
         stream = new libusb::UsbStream{};
     }
+    stream->setFastBootstrap(optionParser.fastBootstrap());
 
     if (videoOutput == nullptr) {
         auto *sdlVideo = new sdl::SdlVideoOutput{};
@@ -45,7 +48,7 @@ int main(int argc, char **argv) {
 
 #ifdef __MINGW32__
     lgx2::ErrorSink *errorSink = new error::WindowsErrorSink();
-#elifdef __APPLE__
+#elif defined(__APPLE__) // #elifdef is C++23; the project targets C++17 (CV-15)
     lgx2::ErrorSink *errorSink = new error::MacOsErrorSink();
 #else
     lgx2::ErrorSink *errorSink = new error::SimpleErrorSink();
@@ -60,10 +63,10 @@ int main(int argc, char **argv) {
     device.setVideoInput(currentSource);
 
     signal(SIGTERM, [](int) {
-        do_exit = true;
+        do_exit = 1;
     });
     signal(SIGINT, [](int) {
-        do_exit = true;
+        do_exit = 1;
     });
 
     SDL_Event event;
@@ -72,7 +75,7 @@ int main(int argc, char **argv) {
         while (!do_exit) {
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
-                    do_exit = true;
+                    do_exit = 1;
                 } else if (event.type == SDL_EVENT_KEY_DOWN) {
                     if (event.key.key == SDLK_P) {
                         device.queryVideoSignalStatus();

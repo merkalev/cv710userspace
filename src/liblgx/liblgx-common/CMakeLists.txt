@@ -6,7 +6,8 @@ pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 
 set(BOOTSTRAP_SOURCES
         src/bootstrap/commanddata_cv710.cpp
-        src/bootstrap/commanddata_cv710.h)
+        src/bootstrap/commanddata_cv710.h
+        src/bootstrap/commanddata_cv710_fast.cpp)
 
 set(SDLOUTPUT_SOURCES
         src/sdl/SdlVideoOutput.cpp

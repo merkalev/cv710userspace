@@ -33,10 +33,14 @@ namespace sdl {
         void shutdownVideo() override;
 
         void setStatus(const std::string &text) override;
+        void updateMetrics(const lgx2::DisplayMetrics &metrics) override;
 
         void setColorspace(ColorspaceMode mode);
         void setColorspace(const std::string &name);
         ColorspaceMode colorspace() const { return _colorspaceMode; }
+        bool isColorspaceUserOverride() const { return _colorspaceUserOverride; }
+        void setColorspaceUserOverride(bool override) { _colorspaceUserOverride = override; }
+
         static const char *colorspaceName(ColorspaceMode mode);
         static const char *colorspaceTitle(ColorspaceMode mode);
         static const char *colorspaceSubtitle(ColorspaceMode mode);
@@ -46,6 +50,7 @@ namespace sdl {
     private:
         void updateWindowTitle();
         void renderSplashScreen();
+        void renderDiagnosticHud(uint8_t alpha);
         void updateTextureFormat();
         void loadSplashBitmaps();
         void convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int srcWidth, int dstWidth, int dstHeight, int step);
@@ -57,6 +62,7 @@ namespace sdl {
         lgx2::VideoScale _targetScale{lgx2::VideoScale::Full};
 
         ColorspaceMode _colorspaceMode{ColorspaceMode::BT709_Limited};
+        bool _colorspaceUserOverride{false};
         uint32_t *_rgbaBuffer{nullptr};
         size_t _rgbaCapacity{0};
         int _srcWidth{1920};
@@ -66,13 +72,18 @@ namespace sdl {
 
         std::chrono::steady_clock::time_point _lastFrameTime{};
         std::chrono::steady_clock::time_point _lastSplashRender{};
+        std::chrono::steady_clock::time_point _lastHudRender{};
         bool _hasSignal{false};
         bool _newFrameAvailable{false};
 
-        // OSD & key toggle state
+        // OSD and diagnostic HUD state
         bool _cKeyPressed{false};
+        bool _hudTogglePressed{false};
+        bool _hudPersistent{false};
         std::chrono::steady_clock::time_point _osdTimestamp{};
         bool _showOsd{false};
+
+        lgx2::DisplayMetrics _metrics{};
     };
 }
 

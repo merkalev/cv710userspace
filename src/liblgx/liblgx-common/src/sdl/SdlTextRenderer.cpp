@@ -172,8 +172,10 @@ namespace sdl {
         SDL_SetTextureAlphaMod(_texture, a);
 
         // Snap to integer pixels for crisp glyphs, then let stb align advances.
+        // stbtt_GetPackedQuad treats ypos as the *baseline*, so convert the
+        // caller's line-top y into a baseline by adding the ascent.
         float gx = std::floor(x + 0.5f);
-        float gy = std::floor(y + 0.5f);
+        float gy = std::floor(y + 0.5f) + _ascent;
         stbtt_aligned_quad q{};
         for (unsigned char c : text) {
             if (c < kFirstChar || c > 126) continue;

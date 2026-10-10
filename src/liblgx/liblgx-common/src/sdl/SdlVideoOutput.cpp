@@ -883,11 +883,11 @@ namespace sdl {
 
         // Soft drop shadow.
         fillRoundRect(_renderer, cardX + 3.0f, cardY + 4.0f, cardW, cardH, rad,
-                      0, 0, 0, static_cast<uint8_t>(alpha * 90 / 255));
+                      0, 0, 0, static_cast<uint8_t>(alpha * 70 / 255));
 
-        // Frosted obsidian card body.
+        // Frosted obsidian card body (semi-transparent so the video shows through).
         fillRoundRect(_renderer, cardX, cardY, cardW, cardH, rad,
-                      16, 20, 28, static_cast<uint8_t>(alpha * 236 / 255));
+                      16, 20, 28, static_cast<uint8_t>(alpha * 200 / 255));
 
         // Hairline border, top and bottom only (keeps the left/right clean).
         SDL_SetRenderDrawColor(_renderer, 64, 78, 100, static_cast<uint8_t>(alpha * 170 / 255));
@@ -928,7 +928,7 @@ namespace sdl {
         float pillX = cardX + cardW - 10.0f - pillW;
         float pillY = cardY + 8.0f;
         fillRoundRect(_renderer, pillX, pillY, pillW, pillH, pillH / 2.0f,
-                      sr, sg, sb, static_cast<uint8_t>(alpha * 235 / 255));
+                      sr, sg, sb, static_cast<uint8_t>(alpha * 225 / 255));
         if (_textRenderer.loaded()) {
             _textRenderer.draw(_renderer, statusText, pillX + 9.0f, pillY + 2.0f, 10, 14, 20, alpha);
         } else {
@@ -1021,7 +1021,7 @@ namespace sdl {
         float pillY = H - pillH - 26.0f;
 
         fillRoundRect(_renderer, pillX, pillY, pillW, pillH, pillH / 2.0f,
-                      14, 18, 26, static_cast<uint8_t>(alpha * 230 / 255));
+                      14, 18, 26, static_cast<uint8_t>(alpha * 195 / 255));
 
         SDL_FRect dot{pillX + 11.0f, pillY + (pillH - 6.0f) / 2.0f, 6.0f, 6.0f};
         SDL_SetRenderDrawColor(_renderer, accR, accG, accB, alpha);

@@ -19,6 +19,14 @@ namespace sdl {
         Count         = 6
     };
 
+    // CV-24: how a non-native-aspect source is fitted into the window.
+    enum class AspectMode {
+        Stretch = 0,  // default: fill the window (historical behaviour)
+        Auto    = 1,  // preserve source DAR (SD 480p/576p -> 4:3, else natural), pillarbox/letterbox
+        R4x3    = 2,  // force 4:3, pillarbox/letterbox
+        R16x9   = 3,  // force 16:9, pillarbox/letterbox
+    };
+
     class SdlVideoOutput : public lgx2::VideoOutput {
     public:
         SdlVideoOutput();
@@ -41,6 +49,12 @@ namespace sdl {
         ColorspaceMode colorspace() const { return _colorspaceMode; }
         bool isColorspaceUserOverride() const { return _colorspaceUserOverride; }
         void setColorspaceUserOverride(bool override) { _colorspaceUserOverride = override; }
+
+        // CV-24: aspect-ratio handling for non-native sources (SD pillarboxing).
+        void setAspectMode(AspectMode mode) { _aspectMode = mode; }
+        AspectMode aspectMode() const { return _aspectMode; }
+        static const char *aspectName(AspectMode mode);
+        static AspectMode parseAspect(const std::string &name);
 
         static const char *colorspaceName(ColorspaceMode mode);
         static const char *colorspaceTitle(ColorspaceMode mode);
@@ -67,6 +81,7 @@ namespace sdl {
 
         ColorspaceMode _colorspaceMode{ColorspaceMode::BT709_Limited};
         bool _colorspaceUserOverride{false};
+        AspectMode _aspectMode{AspectMode::Stretch};  // CV-24
         uint32_t *_rgbaBuffer{nullptr};
         size_t _rgbaCapacity{0};
         int _srcWidth{1920};

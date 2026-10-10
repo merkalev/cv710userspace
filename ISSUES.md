@@ -650,3 +650,43 @@ Credit: This work builds upon the pioneering research and userspace driver found
     / seq `0x3e`), and the auto-replug loop (#1→#8) compounding it, until ^C.
     Led to CV-23b/c: no hardware writes on re-sync. A physical replug remains
     the only cure for FPGA-side stuck state.
+
+---
+
+## 23. To-Do Close-out: NEON ARM64, SD Aspect Handling, Bundled Font, STDI Telemetry (CV-24)
+
+### Change
+- **NEON YUY2→RGBA row converter for ARM64.** `convertRowNeon` mirrors the
+  AVX2/scalar arithmetic (4 macropixels/iteration, `arm_neon.h`) for
+  full-scale non-swapped chroma on `__aarch64__` builds (Advanced SIMD is
+  mandatory on armv8-A, so no runtime check is needed there).
+- **One-shot bit-exact self-check for both SIMD paths.** On the first converted
+  frame, the active SIMD row converter is verified against an independent
+  scalar reference across all four BT.709/601 limited/full coefficient sets on a
+  row width that exercises both the vector loops and the scalar tails
+  (41 macropixels). Any mismatch disables SIMD for the session with a loud log -
+  a converter bug can never silently corrupt colours. This also guards the NEON
+  path, which cannot be validated on x86 build hosts.
+- **Aspect-ratio handling for SD sources** (`--aspect stretch|auto|4:3|16:9`):
+  default `stretch` keeps historical fill behaviour; `auto` pillarboxes/letterboxes
+  480p/576p as classic 4:3 and preserves the natural DAR for HD; `4:3`/`16:9`
+  force a DAR. Bars are drawn black before the fitted picture.
+- **Bundled OSD font.** `assets/fonts/ui.ttf` now ships Inter (Google Fonts,
+  SIL OFL 1.1, license text in `assets/fonts/OFL-1.1.txt`), so the OSD no longer
+  depends on a system font. `CV710_FONT` still wins and overrides.
+- **STDI telemetry (read-only).** The status query now reads the ADV7604 CP-map
+  STDI registers (`0x22`: `0xB1` blanking length, `0xB3` line-count-per-frame)
+  per `drivers/media/i2c/adv7604.c` and prints `STDI: N lines (bl M)` in the
+  `[ADV7604]` status line. Optional reads only (a failure degrades the log
+  field, never the snapshot); values below 239 lines are treated as
+  "not measuring" (Linux rejects `lcf < 239`). Deliberately **no automatic
+  `VID_STD` reprogramming** - mode detection stays with the proven word-count
+  parser.
+
+### Verification
+- Both SIMD paths are self-checked at runtime (see above); on x86 the AVX2
+  self-check passes and the scalar fallback path is unchanged (regressions
+  covered by the existing 254-assertion `device_parser_test` + `framebuilder_test`).
+- Aspect-rect fitting and the NEON path compile clean; **hardware validation of
+  the NEON converter and the STDI line count still needs the bench** (an ARM64
+  Linux box for NEON, a sub-1080p source for STDI/calibration).

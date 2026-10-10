@@ -37,6 +37,7 @@ bool app::OptionParser::process(int argc, char **argv) {
             {"audio-device",       required_argument, 0, 1000},
             {"audio-loopback",     no_argument,       0, 1001},
             {"list-audio-devices", no_argument,       0, 1002},
+            {"aspect",             required_argument, 0, 1003},
             {0, 0, 0, 0}
         };
         switch(getopt_long(argc, argv, "vVd:hsgfS:c:i:bB", longOptions, nullptr))
@@ -110,6 +111,10 @@ bool app::OptionParser::process(int argc, char **argv) {
             case 1002:
                 sdl::SdlAudioOutput::printAudioDevices();
                 return false;
+            case 1003:
+                _aspect = optarg;
+                std::cout << "Setting aspect-ratio handling to: " << _aspect << std::endl;
+                continue;
             case 'h':
             default :
                 std::cout << argv[0] <<
@@ -132,7 +137,8 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t-B, --full-bootstrap\tForce the full capture replay (slow: ~7100 transfers)\n"
                     "\t--audio-device NAME|INDEX\tRoute audio to a specific playback device (substring or index)\n"
                     "\t--audio-loopback\tRoute audio to a virtual loopback sink (snd-aloop / PipeWire) for capture\n"
-                    "\t--list-audio-devices\tList available audio playback devices and exit\n";
+                    "\t--list-audio-devices\tList available audio playback devices and exit\n"
+                    "\t--aspect MODE\tAspect-ratio handling: stretch (default), auto, 4:3, 16:9\n";
                 return false;
             case -1:
                 break;

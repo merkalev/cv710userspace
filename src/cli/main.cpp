@@ -35,6 +35,9 @@ int main(int argc, char **argv) {
         if (!optionParser.colorspace().empty()) {
             sdlVideo->setColorspace(optionParser.colorspace());
         }
+        if (!optionParser.aspect().empty()) {
+            sdlVideo->setAspectMode(sdl::SdlVideoOutput::parseAspect(optionParser.aspect()));
+        }
         videoOutput = sdlVideo;
     }
 

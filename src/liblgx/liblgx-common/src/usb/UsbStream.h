@@ -135,6 +135,10 @@ namespace libusb {
         uint32_t _lastLoggedAudioRate{0};
         uint8_t _lastLoggedColorspace{0xFF};
         uint32_t _statusQueryFailures{0};
+        // CV-24: STDI telemetry change-tracking in the status log.
+        bool _lastLoggedHadStdi{false};
+        uint16_t _lastLoggedStdiLcf{0};
+        uint16_t _lastLoggedStdiBl{0};
 
         std::thread _readThread;
         std::mutex _queueMutex;

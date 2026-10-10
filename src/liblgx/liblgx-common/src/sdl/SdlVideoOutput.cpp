@@ -17,6 +17,11 @@
 #define CV710_HAVE_X86_SIMD 1
 #endif
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#define CV710_HAVE_ARM_SIMD 1
+#endif
+
 namespace sdl {
 
     static inline uint8_t clamp8(int val) {
@@ -142,6 +147,27 @@ namespace sdl {
             return ColorspaceMode::Direct_YUY2;
         }
         return ColorspaceMode::BT709_Limited;
+    }
+
+    const char *SdlVideoOutput::aspectName(AspectMode mode) {
+        switch (mode) {
+            case AspectMode::Stretch: return "stretch";
+            case AspectMode::Auto:    return "auto";
+            case AspectMode::R4x3:    return "4:3";
+            case AspectMode::R16x9:   return "16:9";
+        }
+        return "stretch";
+    }
+
+    AspectMode SdlVideoOutput::parseAspect(const std::string &name) {
+        if (name == "auto") {
+            return AspectMode::Auto;
+        } else if (name == "4:3" || name == "43" || name == "4x3" || name == "classic") {
+            return AspectMode::R4x3;
+        } else if (name == "16:9" || name == "169" || name == "16x9" || name == "widescreen") {
+            return AspectMode::R16x9;
+        }
+        return AspectMode::Stretch;
     }
 
     SdlVideoOutput::SdlVideoOutput() {
@@ -379,6 +405,193 @@ namespace sdl {
             return false;
 #endif
         }
+#if defined(CV710_HAVE_ARM_SIMD)
+        // NEON (armv8 Advanced SIMD) YUY2 -> RGBA32 row converter. Same
+        // arithmetic as the scalar path, bit-for-bit incl. the CV-09 co-sited
+        // chroma reconstruction; 4 macropixels per iteration. armv8-A mandates
+        // Advanced SIMD, so no runtime feature check is needed on aarch64.
+        // Exactness is verified once at runtime by simdSelfCheckPass() below.
+        void convertRowNeon(const uint32_t *srcRow, uint32_t *dstRow, int pairs,
+                            int cY, int cRV, int cGU, int cGV, int cBU, int y_off) {
+            const uint32x4_t maskFF  = vdupq_n_u32(0xFFu);
+            const uint32x4_t bias128 = vdupq_n_u32(128u);
+            const int32x4_t  round   = vdupq_n_s32(32768);
+            const int32x4_t  zero    = vdupq_n_s32(0);
+            const int32x4_t  c255    = vdupq_n_s32(255);
+            const uint32x4_t alpha   = vdupq_n_u32(0xFF000000u);
+            const int32x4_t  cy  = vdupq_n_s32(cY);
+            const int32x4_t  crv = vdupq_n_s32(cRV);
+            const int32x4_t  cgu = vdupq_n_s32(cGU);
+            const int32x4_t  cgv = vdupq_n_s32(cGV);
+            const int32x4_t  cbu = vdupq_n_s32(cBU);
+            const int32x4_t  yoff = vdupq_n_s32(y_off);
+
+            int x = 0;
+            for (; x + 4 <= pairs; x += 4) {
+                const uint32x4_t word = vld1q_u32(srcRow + x);
+                // YUYV macropixel in a 32-bit word (LE bytes): [Y1 | V | Y0 | U]
+                const uint32x4_t y0 = vandq_u32(word, maskFF);
+                const uint32x4_t u  = vandq_u32(vshrq_n_u32(word, 8), maskFF);
+                const uint32x4_t y1 = vandq_u32(vshrq_n_u32(word, 16), maskFF);
+                const uint32x4_t v  = vshrq_n_u32(word, 24);  // top byte already 0..255
+
+                // CV-09: the odd (Y1) pixel uses chroma interpolated halfway to
+                // the NEXT macropixel's chroma; the row's final macropixel
+                // replicates its own. Lane 3 (last macropixel of the vector)
+                // reads its neighbour from srcRow[x+4] when it exists.
+                uint32x4_t uN = vextq_u32(u, u, 1);              // {u1,u2,u3,u0}
+                uint32x4_t vN = vextq_u32(v, v, 1);
+                const uint32_t uLast = vgetq_lane_u32(u, 3);
+                const uint32_t vLast = vgetq_lane_u32(v, 3);
+                uN = vsetq_lane_u32(uLast, uN, 3);               // {u1,u2,u3,u3}
+                vN = vsetq_lane_u32(vLast, vN, 3);
+                if (x + 4 < pairs) {
+                    const uint32_t nw = srcRow[x + 4];
+                    uN = vsetq_lane_u32((nw >> 8) & 0xFFu, uN, 3);
+                    vN = vsetq_lane_u32((nw >> 24) & 0xFFu, vN, 3);
+                }
+
+                const uint32x4_t uOdd = vrhaddq_u32(u, uN);      // (u+uN+1)>>1
+                const uint32x4_t vOdd = vrhaddq_u32(v, vN);
+
+                const int32x4_t uu  = vreinterpretq_s32_u32(vsubq_u32(u, bias128));
+                const int32x4_t vv  = vreinterpretq_s32_u32(vsubq_u32(v, bias128));
+                const int32x4_t uuO = vreinterpretq_s32_u32(vsubq_u32(uOdd, bias128));
+                const int32x4_t vvO = vreinterpretq_s32_u32(vsubq_u32(vOdd, bias128));
+
+                const int32x4_t rOff  = vmulq_n_s32(vv, cRV);
+                const int32x4_t gOff  = vsubq_s32(zero, vaddq_s32(vmulq_n_s32(uu, cGU), vmulq_n_s32(vv, cGV)));
+                const int32x4_t bOff  = vmulq_n_s32(uu, cBU);
+                const int32x4_t rOff1 = vmulq_n_s32(vvO, cRV);
+                const int32x4_t gOff1 = vsubq_s32(zero, vaddq_s32(vmulq_n_s32(uuO, cGU), vmulq_n_s32(vvO, cGV)));
+                const int32x4_t bOff1 = vmulq_n_s32(uuO, cBU);
+
+                const int32x4_t y0s = vaddq_s32(vmulq_n_s32(vsubq_s32(vreinterpretq_s32_u32(y0), yoff), cY), round);
+                const int32x4_t y1s = vaddq_s32(vmulq_n_s32(vsubq_s32(vreinterpretq_s32_u32(y1), yoff), cY), round);
+
+                const int32x4_t r0 = vmaxq_s32(vminq_s32(vshrq_n_s32(vaddq_s32(y0s, rOff), 16), c255), zero);
+                const int32x4_t g0 = vmaxq_s32(vminq_s32(vshrq_n_s32(vaddq_s32(y0s, gOff), 16), c255), zero);
+                const int32x4_t b0 = vmaxq_s32(vminq_s32(vshrq_n_s32(vaddq_s32(y0s, bOff), 16), c255), zero);
+                const int32x4_t r1 = vmaxq_s32(vminq_s32(vshrq_n_s32(vaddq_s32(y1s, rOff1), 16), c255), zero);
+                const int32x4_t g1 = vmaxq_s32(vminq_s32(vshrq_n_s32(vaddq_s32(y1s, gOff1), 16), c255), zero);
+                const int32x4_t b1 = vmaxq_s32(vminq_s32(vshrq_n_s32(vaddq_s32(y1s, bOff1), 16), c255), zero);
+
+                uint32x4_t ev = vreinterpretq_u32_s32(r0);
+                uint32x4_t od = vreinterpretq_u32_s32(r1);
+                ev = vorrq_u32(ev, vshlq_n_u32(vreinterpretq_u32_s32(g0), 8));
+                ev = vorrq_u32(ev, vshlq_n_u32(vreinterpretq_u32_s32(b0), 16));
+                od = vorrq_u32(od, vshlq_n_u32(vreinterpretq_u32_s32(g1), 8));
+                od = vorrq_u32(od, vshlq_n_u32(vreinterpretq_u32_s32(b1), 16));
+                ev = vorrq_u32(ev, alpha);
+                od = vorrq_u32(od, alpha);
+
+                const uint32x4x2_t zip = vzipq_u32(ev, od);
+                vst1q_u32(dstRow + x * 2, zip.val[0]);
+                vst1q_u32(dstRow + x * 2 + 4, zip.val[1]);
+            }
+
+            // Scalar tail: mirrors the production scalar loop exactly; see the
+            // identical tail in convertRowAvx2.
+            for (; x < pairs; x++) {
+                uint32_t word = srcRow[x];
+                uint8_t y0 = word & 0xFF;
+                uint8_t u  = (word >> 8) & 0xFF;
+                uint8_t y1 = (word >> 16) & 0xFF;
+                uint8_t v  = (word >> 24) & 0xFF;
+                uint8_t uNext = u, vNext = v;
+                if (x + 1 < pairs) {
+                    uint32_t nw = srcRow[x + 1];
+                    uNext = (nw >> 8) & 0xFF;
+                    vNext = (nw >> 24) & 0xFF;
+                }
+                int u_val = static_cast<int>(u) - 128;
+                int v_val = static_cast<int>(v) - 128;
+                int u_valOdd = (static_cast<int>(u) + static_cast<int>(uNext) + 1) / 2 - 128;
+                int v_valOdd = (static_cast<int>(v) + static_cast<int>(vNext) + 1) / 2 - 128;
+                int r_off = cRV * v_val, g_off = -(cGU * u_val + cGV * v_val), b_off = cBU * u_val;
+                int r_off1 = cRV * v_valOdd, g_off1 = -(cGU * u_valOdd + cGV * v_valOdd), b_off1 = cBU * u_valOdd;
+                int y0s = cY * (static_cast<int>(y0) - y_off) + 32768;
+                int y1s = cY * (static_cast<int>(y1) - y_off) + 32768;
+                uint8_t r0 = clamp8((y0s + r_off) >> 16), g0 = clamp8((y0s + g_off) >> 16), b0 = clamp8((y0s + b_off) >> 16);
+                uint8_t r1 = clamp8((y1s + r_off1) >> 16), g1 = clamp8((y1s + g_off1) >> 16), b1 = clamp8((y1s + b_off1) >> 16);
+                dstRow[x * 2]     = 0xFF000000u | (static_cast<uint32_t>(b0) << 16) | (static_cast<uint32_t>(g0) << 8) | r0;
+                dstRow[x * 2 + 1] = 0xFF000000u | (static_cast<uint32_t>(b1) << 16) | (static_cast<uint32_t>(g1) << 8) | r1;
+            }
+        }
+#endif
+
+        // Scalar row reference, byte-identical to the production loop for
+        // step == 1 / non-swapped chroma. Used only by the SIMD self-check.
+        void convertRowScalarRef(const uint32_t *srcRow, uint32_t *dstRow, int pairs,
+                                 int cY, int cRV, int cGU, int cGV, int cBU, int y_off) {
+            for (int x = 0; x < pairs; x++) {
+                uint32_t word = srcRow[x];
+                uint8_t y0 = word & 0xFF;
+                uint8_t u  = (word >> 8) & 0xFF;
+                uint8_t y1 = (word >> 16) & 0xFF;
+                uint8_t v  = (word >> 24) & 0xFF;
+                uint8_t uNext = u, vNext = v;
+                if (x + 1 < pairs) {
+                    uint32_t nw = srcRow[x + 1];
+                    uNext = (nw >> 8) & 0xFF;
+                    vNext = (nw >> 24) & 0xFF;
+                }
+                int u_val = static_cast<int>(u) - 128;
+                int v_val = static_cast<int>(v) - 128;
+                int u_valOdd = (static_cast<int>(u) + static_cast<int>(uNext) + 1) / 2 - 128;
+                int v_valOdd = (static_cast<int>(v) + static_cast<int>(vNext) + 1) / 2 - 128;
+                int r_off = cRV * v_val, g_off = -(cGU * u_val + cGV * v_val), b_off = cBU * u_val;
+                int r_off1 = cRV * v_valOdd, g_off1 = -(cGU * u_valOdd + cGV * v_valOdd), b_off1 = cBU * u_valOdd;
+                int y0s = cY * (static_cast<int>(y0) - y_off) + 32768;
+                int y1s = cY * (static_cast<int>(y1) - y_off) + 32768;
+                uint8_t r0 = clamp8((y0s + r_off) >> 16), g0 = clamp8((y0s + g_off) >> 16), b0 = clamp8((y0s + b_off) >> 16);
+                uint8_t r1 = clamp8((y1s + r_off1) >> 16), g1 = clamp8((y1s + g_off1) >> 16), b1 = clamp8((y1s + b_off1) >> 16);
+                dstRow[x * 2]     = 0xFF000000u | (static_cast<uint32_t>(b0) << 16) | (static_cast<uint32_t>(g0) << 8) | r0;
+                dstRow[x * 2 + 1] = 0xFF000000u | (static_cast<uint32_t>(b1) << 16) | (static_cast<uint32_t>(g1) << 8) | r1;
+            }
+        }
+
+#if defined(CV710_HAVE_X86_SIMD) || defined(CV710_HAVE_ARM_SIMD)
+        // One-shot bit-exactness self-check of the active SIMD row converter
+        // against the scalar reference, run on the first converted frame (once
+        // per process). Covers all four BT.709/601 limited/full coefficient
+        // sets and a row width that exercises both the vector loops and the
+        // scalar tails (41 macropixels = e.g. 5x8+1 on AVX2, 10x4+1 on NEON).
+        // On any mismatch the SIMD path is disabled for the session, so a
+        // converter bug can never silently corrupt colours.
+        bool simdSelfCheckPass() {
+            const int pairs = 41;
+            std::vector<uint32_t> src(static_cast<size_t>(pairs));
+            std::vector<uint32_t> ref(static_cast<size_t>(pairs) * 2);
+            std::vector<uint32_t> sim(static_cast<size_t>(pairs) * 2);
+            uint32_t seed = 0x12345678u;
+            for (int i = 0; i < pairs; i++) {
+                seed = seed * 1664525u + 1013904223u;
+                src[static_cast<size_t>(i)] = seed;
+            }
+
+            struct Coef { int cY, cRV, cGU, cGV, cBU, y_off; };
+            const Coef sets[] = {
+                {76309, 117489, 13975, 34925, 138438, 16},  // BT.709 limited
+                {65536, 103206, 12276, 30679, 121608, 0},   // BT.709 full
+                {76309, 104597, 25675, 53279, 132201, 16},  // BT.601 limited
+                {65536,  91881, 22554, 46802, 116130, 0},   // BT.601 full
+            };
+            for (const Coef &c : sets) {
+                convertRowScalarRef(src.data(), ref.data(), pairs, c.cY, c.cRV, c.cGU, c.cGV, c.cBU, c.y_off);
+#if defined(CV710_HAVE_X86_SIMD)
+                convertRowAvx2(src.data(), sim.data(), pairs, c.cY, c.cRV, c.cGU, c.cGV, c.cBU, c.y_off);
+#elif defined(CV710_HAVE_ARM_SIMD)
+                convertRowNeon(src.data(), sim.data(), pairs, c.cY, c.cRV, c.cGU, c.cGV, c.cBU, c.y_off);
+#endif
+                if (ref != sim) {
+                    return false;
+                }
+                std::fill(sim.begin(), sim.end(), 0);
+            }
+            return true;
+        }
+#endif
     }
 
     void SdlVideoOutput::convertYuy2ToRgba(const uint32_t *src, uint32_t *dst, int srcWidth, int dstWidth, int dstHeight, int step) {
@@ -427,16 +640,48 @@ namespace sdl {
         const int pairsPerDstRow = dstWidth / 2;
         const int srcStrideWords = srcWidth / 2;
 
-        const bool useAvx2 = (step == 1) && !swapChroma && avx2Available();
+        const bool useSimd = (step == 1) && !swapChroma;
+#if defined(CV710_HAVE_X86_SIMD)
+        const bool simdCapable = useSimd && avx2Available();
+#elif defined(CV710_HAVE_ARM_SIMD)
+        const bool simdCapable = useSimd;  // Advanced SIMD is mandatory on armv8-A
+#else
+        const bool simdCapable = false;
+#endif
+
+        // CV-21: one-shot bit-exact self-check of the SIMD row converter on the
+        // first SIMD-capable frame. A mismatch disables SIMD for the session
+        // rather than risking silently wrong colours (also guards the ARM64
+        // NEON path, which cannot be validated on x86 build hosts). Guarded by
+        // simdCapable so the check only ever calls a SIMD function the CPU can
+        // actually run (x86: AVX2 absent => never call the target("avx2") fn).
+        static bool simdChecked = false;
+        static bool simdVerified = false;
+        if (!simdChecked && simdCapable) {
+            simdChecked = true;
+#if defined(CV710_HAVE_X86_SIMD) || defined(CV710_HAVE_ARM_SIMD)
+            simdVerified = simdSelfCheckPass();
+            if (simdVerified) {
+                printf("[Video] SIMD YUY2->RGBA row converter self-check passed (bit-exact vs scalar)\n");
+            } else {
+                fprintf(stderr, "[Video] SIMD YUY2->RGBA row converter self-check FAILED - using scalar path\n");
+            }
+            fflush(stdout);
+#endif
+        }
+        const bool useSimdRows = simdCapable && simdVerified;
 
         auto processRows = [&](int y_start, int y_end) {
             for (int y = y_start; y < y_end; y++) {
                 const uint32_t *srcRow = src + (y * step) * srcStrideWords;
                 uint32_t *dstRow = dst + y * dstWidth;
 
-                if (useAvx2) {
+                if (useSimdRows) {
 #if defined(CV710_HAVE_X86_SIMD)
                     convertRowAvx2(srcRow, dstRow, pairsPerDstRow, cY, cRV, cGU, cGV, cBU, y_off);
+                    continue;
+#elif defined(CV710_HAVE_ARM_SIMD)
+                    convertRowNeon(srcRow, dstRow, pairsPerDstRow, cY, cRV, cGU, cGV, cBU, y_off);
                     continue;
 #endif
                 }
@@ -789,7 +1034,46 @@ namespace sdl {
                 SDL_SetTextureBlendMode(_texture, SDL_BLENDMODE_BLEND);
             }
             SDL_SetTextureAlphaMod(_texture, videoAlpha);
-            SDL_RenderTexture(_renderer, _texture, nullptr, nullptr);
+
+            // CV-24: aspect-ratio handling. Default is Stretch (fill the window,
+            // historical behaviour). Otherwise fit the picture into the window
+            // preserving the chosen DAR and pillarbox/letterbox the rest in black.
+            int winW = 1920, winH = 1080;
+            SDL_GetWindowSize(_window, &winW, &winH);
+            SDL_FRect videoDst{0.0f, 0.0f, static_cast<float>(winW), static_cast<float>(winH)};
+            if (_aspectMode != AspectMode::Stretch) {
+                float winAspect = (winH > 0) ? static_cast<float>(winW) / static_cast<float>(winH) : (16.0f / 9.0f);
+                float dar = 16.0f / 9.0f;
+                switch (_aspectMode) {
+                    case AspectMode::R4x3:   dar = 4.0f / 3.0f; break;
+                    case AspectMode::R16x9:  dar = 16.0f / 9.0f; break;
+                    case AspectMode::Auto:
+                    default:
+                        if (_srcHeight <= 576) {
+                            dar = 4.0f / 3.0f;  // 480p/576p classic SD anamorphic container
+                        } else {
+                            dar = (_texHeight > 0)
+                                ? static_cast<float>(_texWidth) / static_cast<float>(_texHeight)
+                                : 16.0f / 9.0f;
+                        }
+                        break;
+                }
+                float fitW = static_cast<float>(winW), fitH = static_cast<float>(winH);
+                if (dar > winAspect) {
+                    fitH = fitW / dar;   // wider than the window: width-constrained
+                } else {
+                    fitW = fitH * dar;   // taller than the window: height-constrained
+                }
+                videoDst.x = (static_cast<float>(winW) - fitW) * 0.5f;
+                videoDst.y = (static_cast<float>(winH) - fitH) * 0.5f;
+                videoDst.w = fitW;
+                videoDst.h = fitH;
+
+                // Plain black bars behind the fitted picture.
+                SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
+                SDL_RenderFillRect(_renderer, nullptr);
+            }
+            SDL_RenderTexture(_renderer, _texture, nullptr, &videoDst);
             if (prevBlend != SDL_BLENDMODE_BLEND) {
                 SDL_SetTextureBlendMode(_texture, prevBlend);
             }

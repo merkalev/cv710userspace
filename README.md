@@ -84,6 +84,7 @@ The OSD uses a modern antialiased TTF (Inter / Noto Sans / Fira Sans are auto-de
 Command-line flags:
 * `-c COLOR`: Set initial colorspace (`bt709`, `bt709full`, `bt601`, `bt601full`, `uyvy`, `yuy2`).
 * `-S SCALE`: Output scaling factor (`1` = full, `2` = half, `4` = quarter).
+* `--aspect MODE`: Aspect-ratio handling for the preview window (`stretch` = fill the window, the default; `auto` = preserve each source's natural DAR, treating 480p/576p as classic 4:3 and HD as 16:9; `4:3` / `16:9` = force that DAR). Non-stretch modes pillarbox/letterbox in black instead of squashing the picture.
 * `-g`: Video only (disable audio output).
 * `-s`: Audio only (disable video preview).
 * `-v`: Print diagnostic summary at exit.

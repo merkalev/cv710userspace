@@ -388,6 +388,28 @@ namespace libusb {
         (void)rd(0x20, 0x01, &vidStd, 1);
         (void)rd(0x20, 0x60, &ioPresence, 1); // IO 0x60: infoframe-present flags
 
+        // CV-24: STDI (Standard Identification) telemetry. Per
+        // drivers/media/i2c/adv7604.c the receiver's own measured geometry
+        // lives on the CP map: 0xB1 = blanking length (14-bit), 0xB3 = line
+        // count per frame (lcf, 11-bit on ADV7604). Purely read-only, kept in
+        // the optional-read class so a failure degrades one log field. This is
+        // a cross-check against the parser's word-count mode detection when a
+        // sub-1080p source is attached (the calibration step itself needs a
+        // bench source).
+        uint8_t stdiBlBytes[2] = {0, 0};
+        uint8_t stdiLcfBytes[2] = {0, 0};
+        bool haveStdi = rd(0x22, 0xB1, stdiBlBytes, 2) == 0 &&
+                        rd(0x22, 0xB3, stdiLcfBytes, 2) == 0;
+        uint16_t stdiBl = ((static_cast<uint16_t>(stdiBlBytes[0]) << 8) | stdiBlBytes[1]) & 0x3FFF;
+        uint16_t stdiLcf = ((static_cast<uint16_t>(stdiLcfBytes[0]) << 8) | stdiLcfBytes[1]) & 0x07FF;
+        // Sanity: a locked 480p signal is ~525 total lines; anything under 240
+        // means the STDI block is not measuring real video (Linux rejects
+        // lcf < 239 in read_stdi()).
+        if (!haveStdi || stdiLcf < 239) {
+            stdiBl = 0;
+            stdiLcf = 0;
+        }
+
         uint16_t field1Height = ((field1Bytes[0] & 0x0F) << 8) | field1Bytes[1];
         bool cableDetected = (cableByte & 0x01) != 0 || tmdsLocked;
         bool geometryValid = tmdsLocked && activeWidth >= 320 && activeWidth <= 4095 &&
@@ -535,8 +557,13 @@ namespace libusb {
         if (published.locked != _lastLoggedLock || published.activeWidth != _lastLoggedWidth ||
             published.activeHeight != _lastLoggedHeight || published.vidStd != _lastLoggedStd ||
             published.interlaced != _lastLoggedInterlaced || published.audioSampleRate != _lastLoggedAudioRate ||
-            published.aviColorspace != _lastLoggedColorspace) {
-            printf("[ADV7604] Lock: %s | Active: %ux%u%s @ %.2f Hz | Lines: %u | Audio: %u Hz | Colorspace: %s | VID_STD: 0x%02X%s\n",
+            published.aviColorspace != _lastLoggedColorspace || haveStdi != _lastLoggedHadStdi ||
+            (haveStdi && (stdiLcf != _lastLoggedStdiLcf || stdiBl != _lastLoggedStdiBl))) {
+            char stdiBuf[48] = "";
+            if (haveStdi) {
+                snprintf(stdiBuf, sizeof(stdiBuf), " | STDI: %u lines (bl %u)", stdiLcf, stdiBl);
+            }
+            printf("[ADV7604] Lock: %s | Active: %ux%u%s @ %.2f Hz | Lines: %u | Audio: %u Hz | Colorspace: %s | VID_STD: 0x%02X%s%s\n",
                    published.locked ? "YES" : "NO",
                    published.activeWidth,
                    published.interlaced ? published.activeHeight * 2 : published.activeHeight,
@@ -544,6 +571,7 @@ namespace libusb {
                    published.audioSampleRate,
                    published.aviColorspace == 0 ? "RGB" : (published.aviColorspace == 1 ? "YCbCr 4:2:2" : "YCbCr 4:4:4"),
                    published.vidStd,
+                   stdiBuf,
                    published.locked ? "" : " [geometry out of range]");
             _lastLoggedLock = published.locked;
             _lastLoggedWidth = published.activeWidth;
@@ -552,6 +580,9 @@ namespace libusb {
             _lastLoggedInterlaced = published.interlaced;
             _lastLoggedAudioRate = published.audioSampleRate;
             _lastLoggedColorspace = published.aviColorspace;
+            _lastLoggedHadStdi = haveStdi;
+            _lastLoggedStdiLcf = stdiLcf;
+            _lastLoggedStdiBl = stdiBl;
         }
 
         // NOTE: deliberately no automatic VID_STD reprogramming. The ADV7604

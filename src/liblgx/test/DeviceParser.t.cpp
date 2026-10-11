@@ -41,12 +41,13 @@ void c1Trailer(uint8_t seq, uint8_t flags, uint32_t &t1, uint32_t &t2) {
     t2 = chk;
 }
 
-// One complete synthetic 1080p frame: C0 + meta + N pixel words + C1 + trailer.
-std::vector<uint32_t> makeFrame(uint32_t seq, uint32_t pixelWords) {
+// One complete synthetic frame: C0 + meta + N pixel words + C1 + trailer.
+// `c0flags` is the C0 metadata b2 byte (bit 7 = FPGA interlace flag).
+std::vector<uint32_t> makeFrame(uint32_t seq, uint32_t pixelWords, uint8_t c0flags = 0x04) {
     std::vector<uint32_t> f;
     f.reserve(pixelWords + 5);
     f.push_back(kC0);
-    f.push_back(c0Meta(static_cast<uint8_t>(seq), 0x04));
+    f.push_back(c0Meta(static_cast<uint8_t>(seq), c0flags));
     for (uint32_t i = 0; i < pixelWords; i++) {
         // Never equals any marker word (0xC0FFFF00 / 0xC1FFFF00 / 0x58FFFF00).
         f.push_back(0x10108010u | (i & 0x0Fu));
@@ -81,10 +82,12 @@ public:
 class CountingVideoOutput : public lgx2::VideoOutput {
 public:
     int frames = 0;
+    uint32_t lastW = 0;
+    uint32_t lastH = 0;
     void initialiseVideo(lgx2::VideoScale scale) override { (void)scale; }
     void videoFrameAvailable(uint32_t *image) override { (void)image; frames++; }
     void videoFrameAvailable(uint32_t *image, uint32_t w, uint32_t h) override {
-        (void)w; (void)h;
+        lastW = w; lastH = h;
         videoFrameAvailable(image);
     }
     void display() override {}
@@ -172,4 +175,54 @@ TEST_CASE("CV-23b: persistent corrupt stream auto re-anchors the parser, capped 
         stream.call(makeFrame(s, k1080P_WORDS - 1));
     }
     REQUIRE(device.autoResyncCount() == 3);
+}
+
+// CV-28k: some SD firmware sets the FPGA C0 interlace bit (b2 bit 7) spuriously
+// for progressive 480p (and flaps it). Because each "field" is a full 480 lines
+// (172,800 words), trusting the bit wove the picture into a double-height
+// 720x960 comb. When the receiver is locked and measures a progressive frame
+// whose word count matches, the frame must be presented progressive.
+TEST_CASE("CV-28k: spurious C0 interlace bit on SD does not force weaving", "[parser]") {
+    MockStream stream;
+    stream.sig.locked = true;
+    stream.sig.activeWidth = 720;
+    stream.sig.activeHeight = 480;
+    stream.sig.interlaced = false;  // ADV7604 measures 720x480p
+    CountingVideoOutput vo;
+    NullAudioOut ao;
+    RunErrorSink sink;
+    lgx2::Device device{&stream, &vo, &ao, nullptr, &sink};
+    device.initialise(lgx2::DeviceType::CV710, lgx2::VideoScale::Full);
+
+    // 480p frame word count with the C0 interlace bit set (0x84).
+    constexpr uint32_t k480pWords = 720u * 480u / 2u;
+    for (uint32_t s = 1; s <= 8; s++) {
+        stream.call(makeFrame(s, k480pWords, 0x84));
+    }
+    REQUIRE(vo.frames >= 1);
+    CHECK(vo.lastW == 720);
+    CHECK(vo.lastH == 480);  // progressive, not the woven 960
+}
+
+// And the 1080i field case must NOT regress: a 518,400-word field with the
+// receiver reporting progressive (a transient) still weaves to 1920x1080.
+TEST_CASE("CV-28k: genuine 1080i fields still weave when the flag is set", "[parser]") {
+    MockStream stream;
+    stream.sig.locked = true;
+    stream.sig.activeWidth = 1920;
+    stream.sig.activeHeight = 540;   // 1080i is reported as a 540-line field
+    stream.sig.interlaced = false;   // transient: receiver momentarily says p
+    CountingVideoOutput vo;
+    NullAudioOut ao;
+    RunErrorSink sink;
+    lgx2::Device device{&stream, &vo, &ao, nullptr, &sink};
+    device.initialise(lgx2::DeviceType::CV710, lgx2::VideoScale::Full);
+
+    constexpr uint32_t k1080iFieldWords = 1920u * 540u / 2u;  // 518,400
+    for (uint32_t s = 1; s <= 8; s++) {
+        stream.call(makeFrame(s, k1080iFieldWords, 0x84));
+    }
+    REQUIRE(vo.frames >= 1);
+    CHECK(vo.lastW == 1920);
+    CHECK(vo.lastH == 1080);  // woven, not a 1920x540 progressive frame
 }

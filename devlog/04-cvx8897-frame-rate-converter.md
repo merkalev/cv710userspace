@@ -303,14 +303,16 @@ Deliberately not done.
 * Whether the `--convert reset` recovery fully restores a wedged converter (it
   never came up in the bench session, since the only wedged state was cleared by
   power-cycling).
-* **Open (SD scan mode):** for 480p and 576p the ADV7604 reports progressive
+* **Resolved (CV-28k):** for 480p and 576p the ADV7604 reports progressive
   (720x480p / 720x576p) but the FPGA's C0 interlace bit (`b2` bit 7) is *set*
-  and flaps, so the parser alternates between classifying the same signal as
-  `480p`/`576p` and as a woven `720x960` / `720x1152` field pair. Each "field"
-  is a full 480/576 lines (172800 / 207360 words), i.e. **full frame height**,
-  not a half-height interlaced field — so weaving doubles the picture. This is
-  independent of CVX8897 conversion (it reproduces after `--convert reset`) and
-  is believed to be a pre-existing parser/detection issue, not a converter one.
-  A targeted fix would prefer the receiver's progressive classification for SD
-  when the field word count equals the full frame, without re-breaking the
-  1080i field case (518400 words, which must stay interlaced).
+  spuriously and flaps, so the parser alternated between classifying the same
+  signal as `480p`/`576p` and as a woven `720x960` / `720x1152` field pair. Each
+  "field" is a full 480/576 lines (172800 / 207360 words), i.e. full frame
+  height, not a half-height interlaced field — so weaving doubled the picture.
+  `detectVideoMode()` now overrides the FPGA bit when the receiver is locked and
+  measures a progressive frame whose word count matches exactly what the FPGA is
+  sending, **unless** the count is a genuine interlaced field (1080i 518400,
+  576i 103680, 480i 86400). That keeps 1080i (a 540-line field that would
+  otherwise be seen as a 1920x540 progressive frame when the receiver bit is
+  momentarily wrong) weaving correctly. Independent of CVX8897 conversion; the
+  fix is in the parser, covered by two `device_parser` regressions.

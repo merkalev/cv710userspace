@@ -115,21 +115,39 @@ namespace lgx2 {
         //    signal. Works for any resolution (1600x900, 1280x1024, 1366x768, ...)
         //    without needing a table entry. 1 word = 2 YUY2 pixels.
         VideoSignalInfo sig = _stream->getVideoSignalInfo();
-        // The FPGA's own C0 field flag (b2 & 0x80) is the authoritative scan-mode
-        // source; only fall back to the receiver's STDI interlace bit if the
-        // flag is unavailable. Relying on the receiver bit alone misclassified
-        // 1080i fields (518,400 words) as a 1920x540 progressive frame.
+
+        // The per-field word counts of the standard interlaced modes are distinct
+        // from every progressive mode: 1080i field ~518,400, 576i ~103,680,
+        // 480i ~86,400 words. Used as a tie-breaker when the scan-mode flags are
+        // unclear, and to keep a genuine field from being reclassified below.
+        auto looksInterlacedWords = [](uint32_t n) {
+            return (n >= 510000 && n <= 524000) ||
+                   (n >= 98000 && n <= 110000) ||
+                   (n >= 80000 && n <= 92000);
+        };
+
+        // The FPGA's own C0 field flag (b2 & 0x80) is normally the authoritative
+        // scan-mode source; the receiver's STDI interlace bit is the tie-breaker.
+        // Relying on the receiver bit alone misclassified 1080i fields (518,400
+        // words) as a 1920x540 progressive frame.
         bool interlaced = hwInterlaced || sig.interlaced;
-        if (!interlaced) {
-            // Some firmware leaves both scan-mode flags clear. The per-field
-            // word counts of the standard interlaced modes are distinct from
-            // every progressive mode, so use them as a tie-breaker (see the
-            // fallback table below): 1080i field ~518,400, 576i ~103,680,
-            // 480i ~86,400 words.
-            if ((frameWords >= 510000 && frameWords <= 524000) ||
-                (frameWords >= 98000 && frameWords <= 110000) ||
-                (frameWords >= 80000 && frameWords <= 92000)) {
-                interlaced = true;
+        if (!interlaced && looksInterlacedWords(frameWords)) {
+            // Some firmware leaves both scan-mode flags clear.
+            interlaced = true;
+        } else if (interlaced && !sig.interlaced && !looksInterlacedWords(frameWords) &&
+                   sig.locked && sig.activeWidth > 0 && sig.activeHeight > 0) {
+            // Conversely, some SD firmware sets the C0 interlace bit spuriously
+            // for progressive 480p/576p (and flaps it), which would weave them
+            // into double-height 720x960 / 720x1152 pictures. If the receiver is
+            // locked and measures a progressive frame whose word count matches
+            // exactly what the FPGA is sending, trust the receiver. The guard
+            // above keeps genuine 1080i/576i/480i fields interlaced. (When the
+            // flag is clear - the other half of the flap - the else-branch below
+            // already returns the progressive mode directly.)
+            const uint32_t expected = (sig.activeWidth * sig.activeHeight) / 2;
+            const uint32_t tol = expected / 50 + 64;  // ~2%
+            if (frameWords + tol >= expected && frameWords <= expected + tol) {
+                interlaced = false;
             }
         }
         if (sig.locked && sig.activeWidth > 0) {

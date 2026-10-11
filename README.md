@@ -54,6 +54,14 @@ sudo udevadm trigger
 
 After adding the rules, unplug and re-plug the CV710.
 
+> **Coexisting with the `avmcv710` kernel driver.** The userspace driver needs
+> exclusive access to the USB interface. If the kernel V4L2 driver is bound to
+> the device, libusb detaches it automatically on claim (Linux) and re-attaches
+> it on exit, so both can be installed side by side — as long as nothing is
+> *streaming* through the kernel driver. If an application (e.g. OBS) is using
+> `avmcv710` at the same time, the claim fails; close it, or unload the module
+> first (`sudo modprobe -r avmcv710`).
+
 ## Running
 Once udev has been configured, run the application:
 

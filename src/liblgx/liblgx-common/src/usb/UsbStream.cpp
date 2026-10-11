@@ -160,6 +160,18 @@ namespace libusb {
         // CV-06: every failure below must release the claimed interface and the
         // opened handle; previously an exception leaked both until process exit.
         try {
+#ifdef __linux__
+            // CV-28c: the kernel V4L2 driver (avmcv710) can be bound to this
+            // interface, which makes libusb_claim_interface fail with BUSY even
+            // when nothing is streaming. Ask libusb to detach the kernel driver
+            // on claim (and re-attach it on release); the module stays loaded and
+            // the kernel re-binds on its next open / a replug. If a kernel-side
+            // consumer is actively streaming (e.g. OBS via avmcv710), the detach
+            // fails and the claim below reports the conflict - close it first.
+            if (libusb_set_auto_detach_kernel_driver(_dev, 1) != LIBUSB_SUCCESS) {
+                printf("Warning: libusb could not enable kernel-driver auto-detach.\n");
+            }
+#endif
             {
                 int cur = 0;
                 if (libusb_get_configuration(_dev, &cur) == LIBUSB_SUCCESS && cur == 1) {
@@ -170,8 +182,15 @@ namespace libusb {
             }
     
             if (libusb_claim_interface(_dev, 0) != LIBUSB_SUCCESS) {
+#ifdef __linux__
+                throw std::runtime_error(
+                        "Could not claim interface for the device - is the kernel driver "
+                        "(avmcv710) or another application (e.g. OBS) using it? Try "
+                        "'sudo modprobe -r avmcv710' first.\n");
+#else
                 throw std::runtime_error(
                         "Could not claim interface for the device - is something else using the device?\n");
+#endif
             }
             _interfaceClaimed = true;
     

@@ -87,8 +87,15 @@ namespace lgx2 {
         // CV-28: CVX8897 hardware frame-rate converter. `mode` is one of:
         //   "" / "native"  leave the converter untouched (default)
         //   "half" / "auto" halve the detected input rate (60p->30p, 50p->25p)
+        //   "reset"         replay the reset preamble, restore native (recovery)
         //   "<mode name>"   an explicit cvx8897::Table name (see --list-cvx8897)
         virtual void setCvx8897Conversion(const std::string &mode) { (void)mode; }
+
+        // CV-28i: true while a requested CVX8897 conversion has not yet been
+        // applied (and may still be applied). Device::initialise() polls
+        // queryVideoSignalStatus() until this clears so the converter's ~3 s
+        // reset pulse completes *before* the stream starts.
+        virtual bool cvx8897ConversionPending() const { return false; }
     };
 
     enum class VideoScale {

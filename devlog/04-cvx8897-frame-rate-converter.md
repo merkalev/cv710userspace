@@ -230,6 +230,24 @@ the receiver (which sits before it in the chain) still sees the source rate.
 The whole sequence (three 1 s waits) runs during `initialise()` before
 streaming. `--convert` is no longer experimental.
 
+### 5.4 Startup ordering (CV-28i) — apply before streaming, not mid-stream
+
+Applying the converter on the first *recognised* lock snapshot is not enough on
+its own. The ADV7604's first locked reading is frequently a transient (one bench
+run reported a bogus `1536x1080p @ 73.37 Hz` while the source acquired) that
+matches no table, so the single up-front query in `Device::initialise()` simply
+deferred the apply — and the control thread then completed it ~3 s into
+capture, tearing a live stream (`Dropped frame while HDMI clock recovering`
+counts climbing to 300/600, `Dropped corrupt frame ... size mismatch`).
+
+`Device::initialise()` now polls `queryVideoSignalStatus()` every 100 ms (up to
+5 s) while `Stream::cvx8897ConversionPending()` is true, **before** calling
+`queueFrameRead()`. The converter is therefore fully applied — reset pulse and
+table — while the FPGA is still idle, before any frames flow. The control thread
+does not exist yet during this window, so the loop owns the device. If no
+convertible mode appears in time the converter is left native and normal capture
+proceeds; the bounded wait cannot hang startup on a missing source.
+
 ## 6. HDCP status readout (documented, not implemented)
 
 Recorded here for completeness; **the decision is to not implement it** (see

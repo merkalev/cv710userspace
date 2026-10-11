@@ -40,6 +40,9 @@ namespace libusb {
         void queryVideoSignalStatus() override;
         void setVideoStandard(uint8_t std) override;
         void setCvx8897Conversion(const std::string &mode) override;
+        // CV-28i: read on the main thread during initialise(), before the control
+        // thread exists, so a plain bool is safe here.
+        bool cvx8897ConversionPending() const override { return _cvx8897Pending; }
         void setFpgaIdle();
         void setFpgaWork();
         bool sendResetStreamDma();

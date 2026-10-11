@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 namespace lgx2 {
 
@@ -47,6 +48,26 @@ namespace lgx2 {
             _audioOutput->initialiseAudio();
 
             _stream->queryVideoSignalStatus();
+
+            // CV-28i: if a CVX8897 frame-rate conversion was requested, finish
+            // applying it BEFORE the stream starts. The converter's ~3 s reset
+            // pulse disrupts a live stream ("HDMI clock recovering", torn/
+            // stretched frames), and the ADV7604's very first locked snapshot is
+            // often a transient (e.g. a bogus 1536x1080) that matches no table,
+            // so a single query up front would otherwise defer the apply into the
+            // middle of capture. The control thread does not exist yet, so this
+            // loop owns the device; it gives up (converter left native) after a
+            // bounded wait so a missing/slow signal cannot hang startup.
+            if (_stream->cvx8897ConversionPending()) {
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(5000);
+                while (_stream->cvx8897ConversionPending() &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    _stream->queryVideoSignalStatus();
+                }
+            }
+
             _stream->queueFrameRead(&_onFrameData);
         });
     }

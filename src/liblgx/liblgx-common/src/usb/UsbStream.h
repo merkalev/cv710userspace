@@ -83,7 +83,10 @@ namespace libusb {
         // the output PLL dead ("HDMI clock recovering" forever).
         bool pca9539SetGpio(uint8_t port, uint8_t pin, bool dirInput, bool value);
         bool cvx8897SetAllOutputModeBits(bool set);
-        bool cvx8897SetModeEnable();  // vendor CVX8897::SetMode(2)
+        // Vendor SetMode(2) = converted output, SetMode(1) = native/passthrough.
+        bool cvx8897SetModeImpl(bool converted);
+        bool cvx8897SetModeEnable() { return cvx8897SetModeImpl(true); }
+        bool cvx8897SetModeNative() { return cvx8897SetModeImpl(false); }
 
         int _droppedTransfers{0};
         int _queuedTransfers{0};

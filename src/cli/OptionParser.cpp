@@ -125,7 +125,8 @@ bool app::OptionParser::process(int argc, char **argv) {
             case 1005:
                 std::cout << "CVX8897 frame-rate conversion modes:\n"
                              "  native (default)  leave the converter untouched\n"
-                             "  half / auto       halve the detected input rate (60p->30p, 50p->25p)\n";
+                             "  half / auto       halve the detected input rate (60p->30p, 50p->25p)\n"
+                             "  reset             restore the converter to native (recovery)\n";
                 for (std::size_t i = 0; i < cvx8897::kTableCount; ++i) {
                     std::cout << "  " << cvx8897::kTables[i].name << "\n";
                 }
@@ -154,7 +155,7 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t--audio-loopback\tRoute audio to a virtual loopback sink (snd-aloop / PipeWire) for capture\n"
                     "\t--list-audio-devices\tList available audio playback devices and exit\n"
                     "\t--aspect MODE\tAspect-ratio handling: stretch (default), auto, 4:3, 16:9\n"
-                    "\t--convert MODE\tCVX8897 hardware frame-rate conversion: native (default), half/auto, or a mode name\n"
+                    "\t--convert MODE\tCVX8897 hardware frame-rate conversion: native (default), half/auto, reset, or a mode name\n"
                     "\t--list-cvx8897\tList the CVX8897 conversion mode names and exit\n";
                 return false;
             case -1:

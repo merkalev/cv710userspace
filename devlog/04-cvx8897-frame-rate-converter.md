@@ -204,6 +204,12 @@ left native rather than half-programmed. The three 1 s waits happen during
 `--convert` is enabled again and no longer needs the `CV710_CVX8897_UNSAFE`
 opt-in; it still needs a bench pass to confirm.
 
+`--convert reset` is a recovery mode: it replays the same HWReset preamble with
+the **native** output selection (`SetMode(1)`: `SetAllOutputMode(1)`, pin 3 = 0)
+and uploads **no** table. Use it to un-stick a converter left in a bad image by
+an earlier experiment, without a physical power-cycle. It does not wait for a
+lock (there may be none precisely because the converter is stuck).
+
 ## 6. HDCP status readout (documented, not implemented)
 
 Recorded here for completeness; **the decision is to not implement it** (see

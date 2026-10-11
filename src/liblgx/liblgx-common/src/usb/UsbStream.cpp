@@ -671,6 +671,24 @@ namespace libusb {
     void UsbStream::maybeApplyCvx8897(const lgx2::VideoSignalInfo &info) {
         if (!_cvx8897Pending || _cvx8897Applied || !_dev) return;
 
+        // CV-28g: recovery mode. "reset" replays the vendor HWReset preamble and
+        // restores the native output without uploading a table, so a converter
+        // left in a bad image by an earlier experiment can be recovered without a
+        // physical power-cycle. Unlike the conversion modes it does not wait for
+        // the source to lock (there may be no lock precisely because the
+        // converter is stuck).
+        if (_cvx8897Request == "reset") {
+            printf("[CVX8897] Restoring converter to native (HWReset preamble)...\n");
+            fflush(stdout);
+            const bool ok = cvx8897SetModeNative();
+            _cvx8897Pending = false;
+            _cvx8897Applied = true;
+            printf("[CVX8897] Converter reset %s.\n",
+                   ok ? "complete; re-run normally" : "FAILED (PCA9539 @0x74 not responding)");
+            fflush(stdout);
+            return;
+        }
+
         const cvx8897::Table *table = nullptr;
         if (_cvx8897Request == "half" || _cvx8897Request == "auto") {
             // Need a locked input to choose the table. Defer until then.
@@ -775,12 +793,13 @@ namespace libusb {
         return true;
     }
 
-    bool UsbStream::cvx8897SetModeEnable() {
-        // Vendor CVX8897::SetMode(2) -- the mode used for the converted output:
+    bool UsbStream::cvx8897SetModeImpl(bool converted) {
+        // Vendor CVX8897::SetMode(2) -- converted output -- or SetMode(1) --
+        // native/passthrough:
         //   HWReset(): output port 0 bit 4: 1 -> (1 s) -> 0 -> (1 s) -> 1
-        //   SetAllOutputMode(0)
-        //   SetGPIO(pin 3 = 1)
-        // A missing ACK on the very first write means the expander is not
+        //   SetAllOutputMode(converted ? 0 : 1)
+        //   SetGPIO(pin 3 = converted)
+        // A missing ACK on the very first read means the expander is not
         // reachable, so abort before touching anything.
         uint8_t outReg = 0, cfgReg = 0;
         if (sendI2cRead(kPca9539Addr, 0x02, &outReg, 1) != 1 ||
@@ -798,8 +817,8 @@ namespace libusb {
         if (!pca9539SetGpio(0, 4, false, true)) return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
-        cvx8897SetAllOutputModeBits(false);
-        pca9539SetGpio(0, 3, false, true);
+        cvx8897SetAllOutputModeBits(!converted);
+        pca9539SetGpio(0, 3, false, converted);
         return true;
     }
 

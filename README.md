@@ -104,6 +104,7 @@ Command-line flags:
 * `--list-audio-devices`: List the playback devices SDL can see and exit.
 * `--convert MODE`: Drive the **CVX8897 hardware frame-rate converter** (the chip between the HDMI receiver and the capture path). `native` (the default) leaves it untouched; `half`/`auto` halves the delivered rate for the detected input (1080p60→30p, 1080p50→25p, 720p60→30p, …); any mode name from `--list-cvx8897` forces a specific table. This halves the delivered frame rate in hardware (the frame geometry is unchanged, so the parser still classifies correctly), which is a different mechanism from the software 1-in-N drop. It replays the vendor's lowering sequence — `SetMode()`/`HWReset()` (a ~3 s reset pulse through the PCA9539 GPIO expander) and the output enable — **before** uploading the 251-register table, because the table alone leaves the converter's output PLL dead. **Still needs bench re-verification after the CV-28f fix** (see `devlog/04` §5.1–5.2).
 * `--list-cvx8897`: List the CVX8897 conversion mode names and exit.
+* `--convert reset`: Recovery mode — replay the CVX8897 `HWReset` preamble and restore the **native** output (no table uploaded) without waiting for a lock. Use it if an earlier `--convert` experiment left the converter in a bad image and the source will not lock (a physical power-cycle is the guaranteed fallback).
 
 ## Running with V4L2 Output
 ### V4L2 Output Setup

@@ -115,7 +115,7 @@ RGB table / 50→25, plus the 1680×1050 / 1440×900 / 1360×768 / 1280×1024 /
 `1360x768` table), and `cvx8897::apply()` issues the 251 writes through
 `UsbStream::sendI2cWrite(0x18, …)`. It is applied **once**, on the first status
 snapshot that has the input locked (explicit mode names skip the lock check).
-The kernel V4L2 driver will follow once this is bench-verified.
+Bench-verified in CV-28f; the kernel V4L2 driver can follow.
 
 * **Apply at setup, not mid-stream.** The vendor selects a mode once; there is
   no evidence that rewriting the tables while frames are flowing is safe, so the
@@ -195,7 +195,7 @@ mode every 1080p→30p branch of `Device::setupScaler()` selects — which is:
 3. `SetGPIO(port 0, pin 3, out, 1)`.
 
 Only **then** does `SetParam()` upload the table. `UsbStream` now replays all of
-this in `cvx8897SetModeEnable()` (via `pca9539SetGpio()` /
+this in `cvx8897SetModeImpl(converted)` (via `pca9539SetGpio()` /
 `cvx8897SetAllOutputModeBits()`) immediately before `cvx8897::apply()`. If the
 expander does not ACK the first write, the apply aborts and the converter is
 left native rather than half-programmed. The three 1 s waits happen during
@@ -209,6 +209,26 @@ the **native** output selection (`SetMode(1)`: `SetAllOutputMode(1)`, pin 3 = 0)
 and uploads **no** table. Use it to un-stick a converter left in a bad image by
 an earlier experiment, without a physical power-cycle. It does not wait for a
 lock (there may be none precisely because the converter is stuck).
+
+### 5.3 Bench result (CV-28f) — works: 60 Hz in, ≈30 fps out
+
+With the source on, `--convert half` on a 1920×1080p60 input now logs:
+
+```
+[CVX8897] Lowering converter (SetMode/HWReset preamble)...
+[CVX8897] PCA9539 port 0 before reset: out=0x71 cfg=0x00 (reset bit4, enable bit3)
+[CVX8897] Applied '1920_1080_60P_422_To_1920_1080_30P_422' (251 register writes).
+```
+
+`out=0x71` means bit 4 (reset) idle-high and bit 3 (enable) low — the native
+image — exactly what is expected before lowering. The ADV7604 locks and stays
+locked; the CV-28e `HDMI clock recovering` storm is gone. The on-screen HUD
+(`CAPTURE` row, toggle with Tab) reads **≈30 fps** while `INPUT` still reports
+`1920x1080p 60.00Hz`, confirming the converter halves the delivered rate while
+the receiver (which sits before it in the chain) still sees the source rate.
+
+The whole sequence (three 1 s waits) runs during `initialise()` before
+streaming. `--convert` is no longer experimental.
 
 ## 6. HDCP status readout (documented, not implemented)
 
@@ -229,12 +249,16 @@ Implementing it would mean polling that map and publishing an encryption flag in
 `VideoSignalInfo`, then selecting the vendor HDCP/content-protection overlays.
 Deliberately not done.
 
-## 7. Open questions
+## 7. Resolved / remaining questions
 
-* Whether `SetMode` mode `1` vs `2` maps to the output being converted: every
-  30p branch of `setupScaler` uses mode `2` (reset + `SetAllOutputMode(0)` +
-  `SetGPIO(pin 3 = 1)`), which is what CV-28f replays. Mode `1` (native) is
-  assumed to be the un-converted default. Confirm the pin-3 polarity on the
-  bench by comparing `--convert native` vs `--convert half`.
-* Interaction with the passthrough default: confirming the converter is
-  currently in the passthrough image (or is simply transparent) on a cold boot.
+* **Resolved (CV-28f):** `SetMode` mode `2` is the converted output and mode `1`
+  the native default — every 30p branch of `setupScaler` uses mode `2` (reset +
+  `SetAllOutputMode(0)` + `SetGPIO(pin 3 = 1)`), which CV-28f replays, and the
+  bench confirms the halving. The pin-3 polarity is therefore correct as
+  implemented.
+* Interaction with the passthrough default: the pre-reset state observed on the
+  bench (`out=0x71`, i.e. bit 3 = 0) matches the native image, so a cold boot is
+  already native/passthrough.
+* Whether the `--convert reset` recovery fully restores a wedged converter (it
+  never came up in the bench session, since the only wedged state was cleared by
+  power-cycling).

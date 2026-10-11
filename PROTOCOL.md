@@ -198,7 +198,33 @@ The hardware FPGA contains internal registers controlling scaling and test patte
 
 ---
 
-## 7. HDCP Behavior
+## 7. Control Endpoint 1 (EP1): the FX3 I2C Bridge
+
+All chip access (ADV7604, CVX8897, EDID RAM, KSV list) goes through the
+Cypress FX3's on-chip I2C master, spoken over bulk EP1 OUT (`0x01`) / IN
+(`0x81`) as fixed 5-byte commands. Lengths are byte counts; `slave7` is the
+7-bit I2C address (so the ADV7604 IO map is `0x20`, not `0x40`).
+
+| Operation | EP1 OUT payload | EP1 IN reply |
+|---|---|---|
+| I2C write | `01 <slave7> 01 <reg> <val>` | none |
+| I2C read  | `02 <slave7> 01 <len> <reg>` | `<len>` bytes |
+
+Notes:
+
+- The second byte is always `0x01` (1-byte register address length) in both
+  formats; reads vary `<len>` (1..32).
+- A read's command+response pair must be atomic: if the bootstrap and the
+  status poll ever interleave two commands, one thread reads the other's
+  `<len>` bytes and both get garbage (the CV-03 bug class). The userspace
+  serialises with `_controlMutex`; the kernel port uses `dev->ctrl_lock`.
+- Reads use 500 ms timeouts so a wedged EP1 cannot stall a status poll for
+  seconds (the kernel's live status path uses the same value).
+- This format was re-derived while porting ADV7604 geometry/lock polling to
+  the kernel driver and matches `UsbStream::sendI2cWrite/sendI2cRead`
+  exactly (`UsbStream.cpp`).
+
+## 8. HDCP Behavior
 
 The ADV7604 hardware chip contains built-in HDCP decryption circuitry. In the official driver, downstream repeater authentication is negotiated over control EP `0x01`.
 
@@ -206,7 +232,7 @@ Because the userspace bootstrap sequence initializes the ADV7604 for raw digitiz
 
 ---
 
-## 8. Attributions
+## 9. Attributions
 
 - **ChrisAJS** (https://github.com/ChrisAJS/lgx2userspace): Original creator, researcher, and author of `lgx2userspace`.
 - **libusb team** (https://libusb.info/): SuperSpeed USB communication library.

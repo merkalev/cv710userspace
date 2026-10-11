@@ -131,6 +131,7 @@ namespace libusb {
         uint16_t _lastLoggedHeight{0};
         uint8_t _lastLoggedStd{0xFF};
         bool _lastLoggedLock{false};
+        bool _lastLoggedOutOfRange{false};
         bool _lastLoggedInterlaced{false};
         uint32_t _lastLoggedAudioRate{0};
         uint8_t _lastLoggedColorspace{0xFF};

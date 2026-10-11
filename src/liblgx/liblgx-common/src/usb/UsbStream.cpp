@@ -14,7 +14,8 @@ namespace {
     // Compare the fields that drive mode detection / HUD / audio so a flaky I2C
     // read cannot be mistaken for a real signal change.
     bool sameSignalInfo(const lgx2::VideoSignalInfo &a, const lgx2::VideoSignalInfo &b) {
-        return a.valid == b.valid && a.locked == b.locked && a.interlaced == b.interlaced &&
+        return a.valid == b.valid && a.locked == b.locked && a.outOfRange == b.outOfRange &&
+               a.interlaced == b.interlaced &&
                a.activeWidth == b.activeWidth && a.activeHeight == b.activeHeight &&
                a.vidStd == b.vidStd && a.audioSampleRate == b.audioSampleRate &&
                a.audioLocked == b.audioLocked && a.aviColorspace == b.aviColorspace &&
@@ -415,6 +416,20 @@ namespace libusb {
         bool geometryValid = tmdsLocked && activeWidth >= 320 && activeWidth <= 4095 &&
                              activeHeight >= 120 && activeHeight <= 2048;
 
+        // CV-27: distinguish a locked-but-uncapturable source from no signal.
+        // The official drivers show a separate "out of range" overlay when the
+        // receiver locks an input the CVX8897/FPGA pipe cannot deliver (4K and
+        // odd PC timings above the frame-word budget). The parser caps frames
+        // at AVM_MAX_FRAME_WORDS (1,152,000 words), i.e. w*h/2 pixels, so both
+        // a 3840x2160 source (fails the 2048-line bound) and an in-bounds
+        // 3840x1200 (2.30M px > 2.304M budget) must show "out of range". The
+        // kernel port mirrors this gate in avm_signal_ok().
+        bool outOfRange = tmdsLocked && !geometryValid;
+        if (tmdsLocked && geometryValid && !interlaced) {
+            uint32_t vPixels = static_cast<uint32_t>(activeWidth) * activeHeight;
+            outOfRange = vPixels > 2U * 1152000U;
+        }
+
         // Audio: PLL lock is HDMI 0x04 bit 0; HDMI 0x18 bit 0 is the "audio
         // sample packet detected" flag (verified against Linux adv7604.c), so a
         // locked-and-detected stream needs BOTH bits. Previously only the PLL
@@ -511,6 +526,7 @@ namespace libusb {
         lgx2::VideoSignalInfo info{};
         info.valid = true;
         info.locked = geometryValid;
+        info.outOfRange = outOfRange;
         info.cableDetected = cableDetected;
         info.interlaced = interlaced;
         info.activeWidth = geometryValid ? activeWidth : 0;
@@ -554,7 +570,8 @@ namespace libusb {
 
         // Log the snapshot that was actually published (not the raw read) so a
         // flaky register cannot spam the log with alternating values.
-        if (published.locked != _lastLoggedLock || published.activeWidth != _lastLoggedWidth ||
+        if (published.locked != _lastLoggedLock || published.outOfRange != _lastLoggedOutOfRange ||
+            published.activeWidth != _lastLoggedWidth ||
             published.activeHeight != _lastLoggedHeight || published.vidStd != _lastLoggedStd ||
             published.interlaced != _lastLoggedInterlaced || published.audioSampleRate != _lastLoggedAudioRate ||
             published.aviColorspace != _lastLoggedColorspace || haveStdi != _lastLoggedHadStdi ||
@@ -583,8 +600,9 @@ namespace libusb {
                    csLabel,
                    published.vidStd,
                    stdiBuf,
-                   published.locked ? "" : " [geometry out of range]");
+                   published.outOfRange ? " [geometry out of range]" : "");
             _lastLoggedLock = published.locked;
+            _lastLoggedOutOfRange = published.outOfRange;
             _lastLoggedWidth = published.activeWidth;
             _lastLoggedHeight = published.activeHeight;
             _lastLoggedStd = published.vidStd;

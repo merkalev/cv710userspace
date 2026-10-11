@@ -75,7 +75,11 @@ namespace sdl {
         SDL_Window *_window{nullptr};
         SDL_Renderer *_renderer{nullptr};
         SDL_Texture *_texture{nullptr};
-        SDL_Texture *_splashTexture{nullptr};
+        // Vendor standby overlays; index 0 = no signal, 1 = out of range
+        // (matches the official driver package bitmaps). The package also
+        // ships hdcp-/content-protection bitmaps, but nothing polls the
+        // ADV7604 HDCP map yet, so they are not loaded.
+        SDL_Texture *_splashTextures[2]{nullptr, nullptr};
         SdlTextRenderer _textRenderer;
         lgx2::VideoScale _targetScale{lgx2::VideoScale::Full};
 

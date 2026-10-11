@@ -959,7 +959,11 @@ namespace sdl {
         // Masking them behind the standby image avoids showing garbage between
         // the splash and the real picture.
         const lgx2::VideoSignalInfo &si = _metrics.signalInfo;
-        const bool signalReady = _hasSignal && si.valid && si.locked && si.activeWidth > 0;
+        // CV-27: an out-of-range source (over the frame-word budget) is never
+        // "settled" even while the link is locked, so the vendor out-of-range
+        // overlay shows instead of a corrupt preview.
+        const bool signalReady = _hasSignal && si.valid && si.locked && si.activeWidth > 0 &&
+                                 !si.outOfRange;
         if (signalReady) {
             if (_signalReadySince == std::chrono::steady_clock::time_point{}) {
                 _signalReadySince = now;
@@ -1351,7 +1355,16 @@ namespace sdl {
     void SdlVideoOutput::loadSplashBitmaps() {
         if (!_renderer) return;
 
-        const std::string file = "assets/aver_custom_no_signal.bmp";
+        // The AVerMedia standby overlays from the official Windows/macOS
+        // driver package. Slot 0 = no signal (no TMDS lock / no cable),
+        // slot 1 = out of range (locked but the geometry cannot be captured,
+        // e.g. 4K or >2.304M-pixel PC timings). CV-27: previously only the
+        // no-signal bitmap was loaded, so an out-of-range input showed "no
+        // signal" like the official driver's first revision.
+        const char *kSplashFiles[] = {
+            "aver_custom_no_signal.bmp",
+            "aver_custom_out_of_range.bmp",
+        };
 
         std::vector<std::string> dirs;
         dirs.emplace_back("");        // relative to the current working directory
@@ -1373,17 +1386,20 @@ namespace sdl {
         dirs.emplace_back("/usr/local/share/cv710userspace/");
         dirs.emplace_back("/usr/share/cv710userspace/");
 
-        for (const auto &dir : dirs) {
-            std::string path = dir + file;
-            SDL_Surface *surf = SDL_LoadBMP(path.c_str());
-            if (surf) {
-                _splashTexture = SDL_CreateTextureFromSurface(_renderer, surf);
-                SDL_DestroySurface(surf);
-                if (_splashTexture) {
-                    printf("[Video] Loaded standby splash bitmap: %s\n", path.c_str());
-                    fflush(stdout);
-                    SDL_SetTextureScaleMode(_splashTexture, SDL_SCALEMODE_LINEAR);
-                    break;
+        for (size_t i = 0; i < sizeof(kSplashFiles) / sizeof(kSplashFiles[0]); ++i) {
+            const std::string file = kSplashFiles[i];
+            for (const auto &dir : dirs) {
+                std::string path = dir + file;
+                SDL_Surface *surf = SDL_LoadBMP(path.c_str());
+                if (surf) {
+                    _splashTextures[i] = SDL_CreateTextureFromSurface(_renderer, surf);
+                    SDL_DestroySurface(surf);
+                    if (_splashTextures[i]) {
+                        printf("[Video] Loaded standby splash bitmap: %s\n", path.c_str());
+                        fflush(stdout);
+                        SDL_SetTextureScaleMode(_splashTextures[i], SDL_SCALEMODE_LINEAR);
+                        break;
+                    }
                 }
             }
         }
@@ -1461,14 +1477,24 @@ namespace sdl {
 
         // The AVerMedia standby bitmap is the whole standby screen; no textual
         // status states are overlaid. The same image is shown while initialising,
-        // while unlocked and while waiting for the first frame.
-        if (_splashTexture) {
+        // while unlocked and while waiting for the first frame. CV-27: pick the
+        // vendor "no signal" vs "out of range" artwork from the measured state,
+        // mirroring the official drivers (and the kernel port's avm_signal_ok).
+        SDL_Texture *splash = nullptr;
+        if (_splashTextures[1] && _metrics.signalInfo.outOfRange) {
+            splash = _splashTextures[1];
+        } else if (_splashTextures[0]) {
+            splash = _splashTextures[0];
+        } else {
+            splash = _splashTextures[1];
+        }
+        if (splash) {
             const float splashW = 640.0f;
             const float splashH = 480.0f;
             const float dstX = (static_cast<float>(winW) - splashW) / 2.0f;
             const float dstY = (static_cast<float>(winH) - splashH) / 2.0f;
             SDL_FRect dstRect{dstX, dstY, splashW, splashH};
-            SDL_RenderTexture(_renderer, _splashTexture, nullptr, &dstRect);
+            SDL_RenderTexture(_renderer, splash, nullptr, &dstRect);
         } else {
             // Minimal fallback when the asset is missing: device name on black,
             // no status text.
@@ -1488,10 +1514,13 @@ namespace sdl {
         _rgbaBuffer = nullptr;
 
         _textRenderer.destroy();
-        if (_splashTexture) {
-            SDL_DestroyTexture(_splashTexture);
-            _splashTexture = nullptr;
+        for (SDL_Texture *tex : _splashTextures) {
+            if (tex) {
+                SDL_DestroyTexture(tex);
+            }
         }
+        _splashTextures[0] = nullptr;
+        _splashTextures[1] = nullptr;
         if (_texture) {
             SDL_DestroyTexture(_texture);
             _texture = nullptr;

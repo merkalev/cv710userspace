@@ -38,6 +38,9 @@ namespace lgx2 {
     struct VideoSignalInfo {
         bool valid{false};       // true once at least one status snapshot has been published
         bool locked{false};      // ADV7604 TMDS/STDI/SSPD lock (real HDMI signal present)
+        bool outOfRange{false};  // TMDS locked, but the measured geometry cannot be
+                                 // captured (over the frame-word budget): show the
+                                 // vendor "out of range" overlay, not "no signal"
         bool cableDetected{false};
         bool interlaced{false};
         uint16_t activeWidth{0};

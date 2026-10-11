@@ -60,7 +60,7 @@ def main():
         out.append("")
     out.append("enum class Mode {")
     for name in modes:
-        out.append(f"    {name},")
+        out.append(f"    M_{name},")
     out.append("};")
     out.append("")
     out.append("struct Table {")
@@ -71,7 +71,7 @@ def main():
     out.append("")
     out.append("inline constexpr Table kTables[] = {")
     for name in modes:
-        out.append(f'    {{Mode::{name}, "{name}", k{name}}},')
+        out.append(f'    {{Mode::M_{name}, "{name}", k{name}}},')
     out.append("};")
     out.append("")
     out.append("inline constexpr std::size_t kTableCount = sizeof(kTables) / sizeof(kTables[0]);")

@@ -31,6 +31,11 @@ set(USB_SOURCES
         src/usb/UsbStream.cpp
         src/usb/UsbStream.h)
 
+set(CVX8897_SOURCES
+        src/cvx8897/cvx8897_convert.cpp
+        src/cvx8897/cvx8897_convert.h
+        src/cvx8897/cvx8897_tables.h)
+
 set(ERRORSINK_SOURCES
         src/SimpleErrorSink.cpp
         src/SimpleErrorSink.h)
@@ -39,6 +44,7 @@ add_library(liblgx-common STATIC
         ${SDLOUTPUT_SOURCES}
         ${NULL_SOURCES}
         ${USB_SOURCES}
+        ${CVX8897_SOURCES}
         ${BOOTSTRAP_SOURCES}
         ${FAKE_USB_SOURCES}
         ${ERRORSINK_SOURCES}

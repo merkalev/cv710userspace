@@ -83,6 +83,12 @@ namespace lgx2 {
         virtual void queryVideoSignalStatus() {}
         virtual void setVideoStandard(uint8_t std) { (void)std; }
         virtual VideoSignalInfo getVideoSignalInfo() const { return {}; }
+
+        // CV-28: CVX8897 hardware frame-rate converter. `mode` is one of:
+        //   "" / "native"  leave the converter untouched (default)
+        //   "half" / "auto" halve the detected input rate (60p->30p, 50p->25p)
+        //   "<mode name>"   an explicit cvx8897::Table name (see --list-cvx8897)
+        virtual void setCvx8897Conversion(const std::string &mode) { (void)mode; }
     };
 
     enum class VideoScale {

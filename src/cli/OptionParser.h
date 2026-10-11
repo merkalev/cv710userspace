@@ -20,6 +20,9 @@ namespace app {
         lgx2::VideoInputSource inputSource() const { return _inputSource; }
         bool fastBootstrap() const { return _fastBootstrap; }
 
+        // CV-28: CVX8897 hardware frame-rate conversion request ("" = leave alone).
+        const std::string &cvx8897Conversion() const { return _cvx8897Conversion; }
+
         // CV-19: virtual audio output routing.
         const std::string &audioDevice() const { return _audioDevice; }
         bool audioLoopback() const { return _audioLoopback; }
@@ -42,6 +45,7 @@ namespace app {
         std::string _audioDevice{""};
         bool _audioLoopback{false};
         bool _v4l2Output{false};
+        std::string _cvx8897Conversion{""};
     };
 }
 

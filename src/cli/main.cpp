@@ -29,6 +29,8 @@ int main(int argc, char **argv) {
         stream = new libusb::UsbStream{};
     }
     stream->setFastBootstrap(optionParser.fastBootstrap());
+    // CV-28: opt-in CVX8897 hardware frame-rate conversion (default: untouched).
+    stream->setCvx8897Conversion(optionParser.cvx8897Conversion());
 
     if (videoOutput == nullptr) {
         auto *sdlVideo = new sdl::SdlVideoOutput{};

@@ -100,10 +100,27 @@ needed.**
 `SetAllOutputMode` is already exercised by the captured bootstrap, which is why
 the converter is in a defined state even without our intervention.
 
-## 5. Implementation notes (for when the switch is wired)
+## 5. Implementation (userspace opt-in, CV-28)
+
+The userspace driver wires the converter behind a default-off flag:
+
+```
+--convert native | half | auto | <mode name>     (--list-cvx8897 enumerates)
+```
+
+`cvx8897::selectHalfRate(width, height, fps, rgb, interlaced)` maps the detected
+input to a table (`1920x1080` 60→30 / 50→25, `1280x720` 60→30 incl. a dedicated
+RGB table / 50→25, plus the 1680×1050 / 1440×900 / 1360×768 / 1280×1024 /
+1280×800 / 1280×768 / 1024×768 / 800×600 60→30 modes; `1366x768` is served by the
+`1360x768` table), and `cvx8897::apply()` issues the 251 writes through
+`UsbStream::sendI2cWrite(0x18, …)`. It is applied **once**, on the first status
+snapshot that has the input locked (explicit mode names skip the lock check).
+The kernel V4L2 driver will follow once this is bench-verified.
 
 * **Apply at setup, not mid-stream.** The vendor selects a mode once; there is
-  no evidence that rewriting the tables while frames are flowing is safe.
+  no evidence that rewriting the tables while frames are flowing is safe, so the
+  upload happens on the initial locked snapshot (before the first frames are
+  consumed in practice).
 * **Geometry is unchanged.** After conversion the frame still contains the full
   source pixel count (the converter halves the *rate*, not the size), so the
   parser's word-count band still identifies 1080p/720p/… exactly as before.
@@ -115,7 +132,26 @@ the converter is in a defined state even without our intervention.
   e.g. 1080p + 60 Hz → `1920_1080_60P_422_To_1920_1080_30P_422`. The
   registered list (devlog 03 §4) is the authoritative set.
 
-## 6. Open questions
+## 6. HDCP status readout (documented, not implemented)
+
+Recorded here for completeness; **the decision is to not implement it** (see
+`TODO.md`, `ISSUES.md` §6, `PROTOCOL.md` §8 — the device is used on unencrypted
+HDMI and sources must keep streaming freely).
+
+The vendor *does* have the read path, should it ever be wanted:
+
+* `CRXADV7604::ADIAPI_RxHdmiIsContentEncrypted(port, bool*)` wraps
+  `CRXADV7604::HAL_RxEncrypted(port)`, which reads a receiver status byte with
+  `ATV_I2CReadField8(...)` and cross-checks cable-detect (IO `0x20` / `0x6f`).
+* The ADV7604 **HDCP map** is 7-bit I2C `0x3A` (the vendor's 8-bit `0x74`, as
+  listed in its receiver map-address table), consistent with the I2C convention
+  documented for the other maps in devlog 03 §6.
+
+Implementing it would mean polling that map and publishing an encryption flag in
+`VideoSignalInfo`, then selecting the vendor HDCP/content-protection overlays.
+Deliberately not done.
+
+## 7. Open questions
 
 * Whether the converter needs a specific `SetMode`/`SetAllOutputMode` ordering
   around a table upload (the bootstrap's `0x8a`/`0x0d` writes suggest the

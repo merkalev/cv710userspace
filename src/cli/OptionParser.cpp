@@ -1,6 +1,7 @@
 #include <getopt.h>
 #include <iostream>
 #include "OptionParser.h"
+#include "cvx8897/cvx8897_convert.h"
 
 lgx2::VideoOutput *app::OptionParser::videoOutput() {
     return _videoOutput;
@@ -38,6 +39,8 @@ bool app::OptionParser::process(int argc, char **argv) {
             {"audio-loopback",     no_argument,       0, 1001},
             {"list-audio-devices", no_argument,       0, 1002},
             {"aspect",             required_argument, 0, 1003},
+            {"convert",            required_argument, 0, 1004},
+            {"list-cvx8897",       no_argument,       0, 1005},
             {0, 0, 0, 0}
         };
         switch(getopt_long(argc, argv, "vVd:hsgfS:c:i:bB", longOptions, nullptr))
@@ -115,6 +118,18 @@ bool app::OptionParser::process(int argc, char **argv) {
                 _aspect = optarg;
                 std::cout << "Setting aspect-ratio handling to: " << _aspect << std::endl;
                 continue;
+            case 1004:
+                _cvx8897Conversion = optarg;
+                std::cout << "Requesting CVX8897 frame-rate conversion: " << _cvx8897Conversion << std::endl;
+                continue;
+            case 1005:
+                std::cout << "CVX8897 frame-rate conversion modes:\n"
+                             "  native (default)  leave the converter untouched\n"
+                             "  half / auto       halve the detected input rate (60p->30p, 50p->25p)\n";
+                for (std::size_t i = 0; i < cvx8897::kTableCount; ++i) {
+                    std::cout << "  " << cvx8897::kTables[i].name << "\n";
+                }
+                return false;
             case 'h':
             default :
                 std::cout << argv[0] <<
@@ -138,7 +153,9 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t--audio-device NAME|INDEX\tRoute audio to a specific playback device (substring or index)\n"
                     "\t--audio-loopback\tRoute audio to a virtual loopback sink (snd-aloop / PipeWire) for capture\n"
                     "\t--list-audio-devices\tList available audio playback devices and exit\n"
-                    "\t--aspect MODE\tAspect-ratio handling: stretch (default), auto, 4:3, 16:9\n";
+                    "\t--aspect MODE\tAspect-ratio handling: stretch (default), auto, 4:3, 16:9\n"
+                    "\t--convert MODE\tCVX8897 hardware frame-rate conversion: native (default), half/auto, or a mode name\n"
+                    "\t--list-cvx8897\tList the CVX8897 conversion mode names and exit\n";
                 return false;
             case -1:
                 break;

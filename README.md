@@ -94,6 +94,8 @@ Command-line flags:
 * `--audio-device NAME|INDEX`: Route captured audio to a specific playback device (substring match or list index).
 * `--audio-loopback`: Route captured audio to a virtual loopback sink so it can be captured by other software.
 * `--list-audio-devices`: List the playback devices SDL can see and exit.
+* `--convert MODE`: Drive the **CVX8897 hardware frame-rate converter** (the chip between the HDMI receiver and the capture path). `native` (the default) leaves it untouched; `half`/`auto` halves the delivered rate for the detected input (1080p60→30p, 1080p50→25p, 720p60→30p, …); any mode name from `--list-cvx8897` forces a specific table. This halves the delivered frame rate in hardware (the frame geometry is unchanged, so the parser still classifies correctly), which is a different mechanism from the software 1-in-N drop. **Opt-in and still needs bench verification.**
+* `--list-cvx8897`: List the CVX8897 conversion mode names and exit.
 
 ## Running with V4L2 Output
 ### V4L2 Output Setup

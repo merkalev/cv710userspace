@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "bootstrap/commanddata_cv710.h"
+#include "cvx8897/cvx8897_convert.h"
 
 namespace {
     // Compare the fields that drive mode detection / HUD / audio so a flaky I2C
@@ -619,12 +620,72 @@ namespace libusb {
         // the mode from the actual frame word count, so re-writing VID_STD only
         // added I2C traffic (and device instability) with no benefit.
         fflush(stdout);
+
+        // CV-28: apply a requested CVX8897 frame-rate conversion once, now that
+        // a fresh geometry/rate snapshot is available. No-op unless requested.
+        maybeApplyCvx8897(published);
     }
 
     void UsbStream::setVideoStandard(uint8_t std) {
         if (!_dev) return;
         printf("[ADV7604] Reprogramming VID_STD -> 0x%02X\n", std);
         sendI2cWrite(0x20, 0x01, std);
+        fflush(stdout);
+    }
+
+    void UsbStream::setCvx8897Conversion(const std::string &mode) {
+        _cvx8897Request = mode;
+        _cvx8897Pending = !mode.empty() && mode != "native" && mode != "off";
+        if (_cvx8897Pending) {
+            printf("[CVX8897] Frame-rate conversion requested: %s\n", mode.c_str());
+            fflush(stdout);
+        }
+    }
+
+    void UsbStream::maybeApplyCvx8897(const lgx2::VideoSignalInfo &info) {
+        if (!_cvx8897Pending || _cvx8897Applied || !_dev) return;
+
+        const cvx8897::Table *table = nullptr;
+        if (_cvx8897Request == "half" || _cvx8897Request == "auto") {
+            // Need a locked input to choose the table. Defer until then.
+            if (!info.locked) return;
+            const bool rgb = (info.aviColorspace & 0x0F) <= 0x01;  // RGB limited/full
+            table = cvx8897::selectHalfRate(info.activeWidth, info.activeHeight,
+                                            info.measuredFps, rgb, info.interlaced);
+            if (table == nullptr) {
+                printf("[CVX8897] No half-rate table for %ux%u@%.2f%s; converter left alone.\n",
+                       info.activeWidth, info.activeHeight, info.measuredFps,
+                       info.interlaced ? "i" : "p");
+                fflush(stdout);
+                _cvx8897Pending = false;
+                return;
+            }
+        } else {
+            table = cvx8897::findTable(_cvx8897Request);
+            if (table == nullptr) {
+                printf("[CVX8897] Unknown mode '%s'; converter left alone (see --list-cvx8897).\n",
+                       _cvx8897Request.c_str());
+                fflush(stdout);
+                _cvx8897Pending = false;
+                return;
+            }
+        }
+
+        // 251 register writes over the EP1 I2C bridge (see tools/cvx8897/README.md).
+        // This is the only point that programs the converter, and it runs once.
+        int failures = cvx8897::apply(*table, [this](uint8_t reg, uint8_t val) {
+            return sendI2cWrite(cvx8897::kI2cAddress, reg, val);
+        });
+
+        _cvx8897Pending = false;
+        _cvx8897Applied = true;
+        if (failures != 0) {
+            printf("[CVX8897] Applied '%s' with %d/%zu write failures.\n",
+                   table->name, failures, cvx8897::kRegCount);
+        } else {
+            printf("[CVX8897] Applied '%s' (%zu register writes).\n",
+                   table->name, cvx8897::kRegCount);
+        }
         fflush(stdout);
     }
 

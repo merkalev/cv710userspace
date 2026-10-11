@@ -39,6 +39,7 @@ namespace libusb {
         void setFastBootstrap(bool fast) override { _fastBootstrap = fast; }
         void queryVideoSignalStatus() override;
         void setVideoStandard(uint8_t std) override;
+        void setCvx8897Conversion(const std::string &mode) override;
         void setFpgaIdle();
         void setFpgaWork();
         bool sendResetStreamDma();
@@ -71,6 +72,7 @@ namespace libusb {
         void serviceStalledTransfers();  // CV-12: clear_halt outside the completion path
         void queueAllFrameReads();       // CV-07: main-thread only, never from a callback
         void closeDevice();              // CV-06: exception-safe handle/interface release
+        void maybeApplyCvx8897(const lgx2::VideoSignalInfo &info);  // CV-28
 
         int _droppedTransfers{0};
         int _queuedTransfers{0};
@@ -84,6 +86,14 @@ namespace libusb {
         bool _shutdownDone{false};
         lgx2::VideoInputSource _inputSource{lgx2::VideoInputSource::HDMI};
         bool _fastBootstrap{false};
+
+        // CV-28: CVX8897 hardware frame-rate converter. The request is set from
+        // the CLI before initialise(); it is applied once, either on the initial
+        // status query (explicit mode, or "half" when the source is already
+        // locked) or on the first locked snapshot seen by the control thread.
+        std::string _cvx8897Request{};
+        bool _cvx8897Pending{false};
+        bool _cvx8897Applied{false};
 
         std::vector<libusb_transfer *> _transfers;
         std::atomic<int> _activeTransfers{0};

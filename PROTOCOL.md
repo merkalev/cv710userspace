@@ -230,6 +230,8 @@ The ADV7604 hardware chip contains built-in HDCP decryption circuitry. In the of
 
 Because the userspace bootstrap sequence initializes the ADV7604 for raw digitization without initiating downstream authentication handshakes, the ADV7604 outputs the digitized pixel stream directly to the Cypress FX3 FIFO. Sources that typically enforce HDCP stream freely over USB bulk EP `0x83`. This behavior is verified functional and intended.
 
+**Status readout — documented, not implemented (CV-28).** The receiver does expose an encryption-status read (`CRXADV7604::ADIAPI_RxHdmiIsContentEncrypted` → `HAL_RxEncrypted`, which reads a status byte from the ADV7604 **HDCP map**, 7-bit I2C `0x3A` / vendor 8-bit `0x74`), but polling it or showing an HDCP OSD notice remains intentionally out of scope (`TODO.md`, `ISSUES.md` §6). Not interrogating HDCP is precisely why the sources stream.
+
 ---
 
 ## 9. Attributions

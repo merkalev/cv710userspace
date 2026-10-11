@@ -74,6 +74,17 @@ namespace libusb {
         void closeDevice();              // CV-06: exception-safe handle/interface release
         void maybeApplyCvx8897(const lgx2::VideoSignalInfo &info);  // CV-28
 
+        // CV-28f: the vendor lowers the CVX8897 with SetMode()/HWReset() and only
+        // then uploads the register table with SetParam(). SetMode(2) (used for
+        // the converted output) pulses the converter's active-low reset line --
+        // PCA9539 GPIO expander at 7-bit I2C 0x74, output port 0 bit 4 -- toggles
+        // the output-enable bit (port 0 bit 3) and rewrites CVX8897 regs 0x8a
+        // bit 1 / 0x0d bit 7. Uploading the table without this preamble leaves
+        // the output PLL dead ("HDMI clock recovering" forever).
+        bool pca9539SetGpio(uint8_t port, uint8_t pin, bool dirInput, bool value);
+        bool cvx8897SetAllOutputModeBits(bool set);
+        bool cvx8897SetModeEnable();  // vendor CVX8897::SetMode(2)
+
         int _droppedTransfers{0};
         int _queuedTransfers{0};
         int _queueHighWater{0};

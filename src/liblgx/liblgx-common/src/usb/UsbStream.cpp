@@ -8,11 +8,17 @@
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
+#include <thread>
+#include <chrono>
 
 #include "bootstrap/commanddata_cv710.h"
 #include "cvx8897/cvx8897_convert.h"
 
 namespace {
+    // CV-28f: 7-bit I2C address of the PCA9539 GPIO expander that drives the
+    // CVX8897 reset / output-enable lines (vendor CPCA9539A, 8-bit 0xE8).
+    constexpr uint8_t kPca9539Addr = 0x74;
+
     // Compare the fields that drive mode detection / HUD / audio so a flaky I2C
     // read cannot be mistaken for a real signal change.
     bool sameSignalInfo(const lgx2::VideoSignalInfo &a, const lgx2::VideoSignalInfo &b) {
@@ -665,23 +671,6 @@ namespace libusb {
     void UsbStream::maybeApplyCvx8897(const lgx2::VideoSignalInfo &info) {
         if (!_cvx8897Pending || _cvx8897Applied || !_dev) return;
 
-        // CV-28e: the vendor changes the frame rate inside Device::setupScaler(),
-        // which lowers the CVX8897 with SetMode()/HWReset() -- a reset-line pulse
-        // with three 1000 ms waits -- and only then uploads the table with
-        // SetParam(). Writing the 251 registers on their own leaves the
-        // converter's output PLL unsynchronised, so the FX3 sees a dead pixel
-        // clock and the stream collapses into a permanent "HDMI clock recovering"
-        // storm until the device is power-cycled. Guard the raw upload behind an
-        // explicit opt-in until the reset sequence is reverse engineered.
-        if (std::getenv("CV710_CVX8897_UNSAFE") == nullptr) {
-            printf("[CVX8897] Frame-rate conversion is disabled: a standalone table upload "
-                   "breaks capture (the vendor runs HWReset/SetMode first). "
-                   "Set CV710_CVX8897_UNSAFE=1 to force it at your own risk.\n");
-            fflush(stdout);
-            _cvx8897Pending = false;
-            return;
-        }
-
         const cvx8897::Table *table = nullptr;
         if (_cvx8897Request == "half" || _cvx8897Request == "auto") {
             // Need a locked input to choose the table. Defer until then.
@@ -713,6 +702,20 @@ namespace libusb {
             }
         }
 
+        // CV-28f: replay the vendor's lower/upload ordering. The frame-rate
+        // change is CVX8897::SetMode(2) (reset pulse + output-enable) and only
+        // then SetParam()/the table; the raw upload alone leaves the output PLL
+        // dead. Abort rather than half-program if the expander does not respond.
+        printf("[CVX8897] Lowering converter (SetMode/HWReset preamble)...\n");
+        fflush(stdout);
+        if (!cvx8897SetModeEnable()) {
+            printf("[CVX8897] Converter reset failed (PCA9539 @0x74 not responding); "
+                   "leaving the converter native.\n");
+            fflush(stdout);
+            _cvx8897Pending = false;
+            return;
+        }
+
         // 251 register writes over the EP1 I2C bridge (see tools/cvx8897/README.md).
         // This is the only point that programs the converter, and it runs once.
         int failures = cvx8897::apply(*table, [this](uint8_t reg, uint8_t val) {
@@ -729,6 +732,75 @@ namespace libusb {
                    table->name, cvx8897::kRegCount);
         }
         fflush(stdout);
+    }
+
+    // ---------------------------------------------------------------------
+    // CV-28f: vendor CVX8897::SetMode()/HWReset() preamble.
+    //
+    // The CVX8897 reset line is driven by a PCA9539 I2C GPIO expander (7-bit I2C
+    // 0x74). CPCA9539A::SetGPIO() keeps each pin's direction in the config
+    // register (0x06/0x07, 1 = input) and its level in the output register
+    // (0x02/0x03), preserving all other pins via read-modify-write. CVX8897
+    // uses port 0: bit 4 = active-low reset, bit 3 = output enable.
+    // ---------------------------------------------------------------------
+    bool UsbStream::pca9539SetGpio(uint8_t port, uint8_t pin, bool dirInput, bool value) {
+        const uint8_t regCfg = static_cast<uint8_t>(0x06 + (port ? 1 : 0));
+        const uint8_t regOut = static_cast<uint8_t>(0x02 + (port ? 1 : 0));
+        const uint8_t bit = static_cast<uint8_t>(1u << (pin & 0x07));
+
+        uint8_t cfg = 0;
+        if (sendI2cRead(kPca9539Addr, regCfg, &cfg, 1) != 1) return false;
+        cfg = dirInput ? static_cast<uint8_t>(cfg | bit) : static_cast<uint8_t>(cfg & ~bit);
+        if (!sendI2cWrite(kPca9539Addr, regCfg, cfg)) return false;
+
+        uint8_t out = 0;
+        if (sendI2cRead(kPca9539Addr, regOut, &out, 1) != 1) return false;
+        out = value ? static_cast<uint8_t>(out | bit) : static_cast<uint8_t>(out & ~bit);
+        if (!sendI2cWrite(kPca9539Addr, regOut, out)) return false;
+        return true;
+    }
+
+    bool UsbStream::cvx8897SetAllOutputModeBits(bool set) {
+        // Vendor CVX8897::SetAllOutputMode(): reg 0x8a bit 1 and reg 0x0d bit 7.
+        // Directionally faithful to the vendor; the conversion table rewrites
+        // both registers immediately afterwards anyway.
+        uint8_t v = 0;
+        if (sendI2cRead(cvx8897::kI2cAddress, 0x8a, &v, 1) != 1) return false;
+        v = set ? static_cast<uint8_t>(v | 0x02) : static_cast<uint8_t>(v & ~0x02);
+        if (!sendI2cWrite(cvx8897::kI2cAddress, 0x8a, v)) return false;
+
+        if (sendI2cRead(cvx8897::kI2cAddress, 0x0d, &v, 1) != 1) return false;
+        v = set ? static_cast<uint8_t>(v | 0x80) : static_cast<uint8_t>(v & ~0x80);
+        if (!sendI2cWrite(cvx8897::kI2cAddress, 0x0d, v)) return false;
+        return true;
+    }
+
+    bool UsbStream::cvx8897SetModeEnable() {
+        // Vendor CVX8897::SetMode(2) -- the mode used for the converted output:
+        //   HWReset(): output port 0 bit 4: 1 -> (1 s) -> 0 -> (1 s) -> 1
+        //   SetAllOutputMode(0)
+        //   SetGPIO(pin 3 = 1)
+        // A missing ACK on the very first write means the expander is not
+        // reachable, so abort before touching anything.
+        uint8_t outReg = 0, cfgReg = 0;
+        if (sendI2cRead(kPca9539Addr, 0x02, &outReg, 1) != 1 ||
+            sendI2cRead(kPca9539Addr, 0x06, &cfgReg, 1) != 1) {
+            return false;
+        }
+        printf("[CVX8897] PCA9539 port 0 before reset: out=0x%02x cfg=0x%02x "
+               "(reset bit4, enable bit3)\n", outReg, cfgReg);
+        fflush(stdout);
+
+        if (!pca9539SetGpio(0, 4, false, true)) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (!pca9539SetGpio(0, 4, false, false)) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (!pca9539SetGpio(0, 4, false, true)) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+        cvx8897SetAllOutputModeBits(false);
+        pca9539SetGpio(0, 3, false, true);
+        return true;
     }
 
     bool UsbStream::sendResetStreamDma() {

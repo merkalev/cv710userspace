@@ -174,6 +174,36 @@ CV710_CVX8897_UNSAFE=1  ./build/src/cli/cv710userspace --convert half
 Without the variable, `--convert` prints a clear "disabled" notice and leaves
 the converter native.
 
+### 5.2 The reset resolved (CV-28f) — full vendor preamble replayed
+
+`this->0x14` is a **`CPCA9539A`** (PCA9539 I2C GPIO expander) at 7-bit I2C
+`0x74`, built in the `CVX8897` constructor alongside the `CI2CBus` (`this->0x8`)
+and the `COSDep` sleep helper (`this->0x4`). Its vtable (`0x58b20`) slot 4 is
+`SetGPIO(PCA9539A_PORT, uint8, PCA9539A_GPIO_DIR, PCA9539A_GPIO_VALUE)`, a
+read-modify-write of the expander's config register (`0x06+port`, 1 = input)
+and output register (`0x02+port`). The CVX8897 uses **port 0**:
+
+* bit 4 = active-low **reset** line
+* bit 3 = **output enable**
+
+The vendor lowers the converter with `CVX8897::SetMode(2)` (`0x2405e`) — the
+mode every 1080p→30p branch of `Device::setupScaler()` selects — which is:
+
+1. `HWReset()`: `SetGPIO(port 0, pin 4, out, 1)` → 1000 ms →
+   `SetGPIO(pin 4, 0)` → 1000 ms → `SetGPIO(pin 4, 1)` → 1000 ms;
+2. `SetAllOutputMode(0)` (reg `0x8a` bit 1 clear, reg `0x0d` bit 7 clear);
+3. `SetGPIO(port 0, pin 3, out, 1)`.
+
+Only **then** does `SetParam()` upload the table. `UsbStream` now replays all of
+this in `cvx8897SetModeEnable()` (via `pca9539SetGpio()` /
+`cvx8897SetAllOutputModeBits()`) immediately before `cvx8897::apply()`. If the
+expander does not ACK the first write, the apply aborts and the converter is
+left native rather than half-programmed. The three 1 s waits happen during
+`initialise()` (before streaming), so they do not stall capture.
+
+`--convert` is enabled again and no longer needs the `CV710_CVX8897_UNSAFE`
+opt-in; it still needs a bench pass to confirm.
+
 ## 6. HDCP status readout (documented, not implemented)
 
 Recorded here for completeness; **the decision is to not implement it** (see
@@ -195,11 +225,10 @@ Deliberately not done.
 
 ## 7. Open questions
 
-* **Resolve `this->0x14`'s vtable slot 4** (`HWReset`/`SetMode` GPIO or expander
-  write, args `obj, 0, 4, 0, <0|1>`) to a concrete EP1 command, so the reset
-  pulse can be replayed before the table upload. This is the blocker for the
-  whole feature (see §5.1).
-* Whether `SetMode` mode `1` vs `2` is chosen by the rate (both call `HWReset`;
-  they differ only in the enable bit and one trailing I2C write).
+* Whether `SetMode` mode `1` vs `2` maps to the output being converted: every
+  30p branch of `setupScaler` uses mode `2` (reset + `SetAllOutputMode(0)` +
+  `SetGPIO(pin 3 = 1)`), which is what CV-28f replays. Mode `1` (native) is
+  assumed to be the un-converted default. Confirm the pin-3 polarity on the
+  bench by comparing `--convert native` vs `--convert half`.
 * Interaction with the passthrough default: confirming the converter is
   currently in the passthrough image (or is simply transparent) on a cold boot.

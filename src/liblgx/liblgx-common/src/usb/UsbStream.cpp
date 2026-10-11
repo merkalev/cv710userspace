@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 
 #include "bootstrap/commanddata_cv710.h"
 #include "cvx8897/cvx8897_convert.h"
@@ -663,6 +664,23 @@ namespace libusb {
 
     void UsbStream::maybeApplyCvx8897(const lgx2::VideoSignalInfo &info) {
         if (!_cvx8897Pending || _cvx8897Applied || !_dev) return;
+
+        // CV-28e: the vendor changes the frame rate inside Device::setupScaler(),
+        // which lowers the CVX8897 with SetMode()/HWReset() -- a reset-line pulse
+        // with three 1000 ms waits -- and only then uploads the table with
+        // SetParam(). Writing the 251 registers on their own leaves the
+        // converter's output PLL unsynchronised, so the FX3 sees a dead pixel
+        // clock and the stream collapses into a permanent "HDMI clock recovering"
+        // storm until the device is power-cycled. Guard the raw upload behind an
+        // explicit opt-in until the reset sequence is reverse engineered.
+        if (std::getenv("CV710_CVX8897_UNSAFE") == nullptr) {
+            printf("[CVX8897] Frame-rate conversion is disabled: a standalone table upload "
+                   "breaks capture (the vendor runs HWReset/SetMode first). "
+                   "Set CV710_CVX8897_UNSAFE=1 to force it at your own risk.\n");
+            fflush(stdout);
+            _cvx8897Pending = false;
+            return;
+        }
 
         const cvx8897::Table *table = nullptr;
         if (_cvx8897Request == "half" || _cvx8897Request == "auto") {

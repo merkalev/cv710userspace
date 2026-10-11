@@ -132,6 +132,48 @@ The kernel V4L2 driver will follow once this is bench-verified.
   e.g. 1080p + 60 Hz → `1920_1080_60P_422_To_1920_1080_30P_422`. The
   registered list (devlog 03 §4) is the authoritative set.
 
+### 5.1 Bench result (CV-28e) — a standalone table upload breaks capture
+
+The first on-hardware test **failed**, and in a way that pins down the missing
+step. With `--convert half` on a locked 1080p59.94 source the log showed:
+
+```
+[CVX8897] Applied '1920_1080_60P_422_To_1920_1080_30P_422' (251 register writes).
+[Video] Dropped frame while HDMI clock recovering (b2=0x10, count=1)
+... (b2 cycles through 0x10..0x13 forever; never recovers)
+[Video] Unmatched frameWords: 40845 (expected 1080p ~1036800)
+```
+
+The FX3 is reporting a dead/unstable pixel clock (`b2=0x10..0x13`) and the
+frames are far too small to be real pictures. It does **not** recover when the
+app is restarted without `--convert`; the CVX8897 keeps its 30p image until the
+device is power-cycled. So writing the 251 registers on their own is not merely
+incomplete — it is actively harmful.
+
+Disassembly of the vendor caller shows why. The frame-rate change lives in
+`Device::setupScaler()` (`0x437c`), whose only relevant calls are `SetMode()`
+then `SetParam()`/`REG_*` (`0x24102`). `SetMode()` (`0x2405e`) first calls
+`HWReset()` (`0x23f76`), which pulses the CVX8897 reset line **three times with
+1000 ms waits** (via the `this->0x14` I2C-backed object, a GPIO/expander write
+of "pin 4" `1→0→1`) and then sets an output-enable. Only *after* that does
+`SetParam()` upload the table.
+
+Our implementation does the `SetParam` half only. Without the `HWReset`/
+`SetMode` preamble the converter's output PLL never re-locks, which is exactly
+the observed symptom. **Reproducing the reset pulse is the next step** and needs
+the `this->0x14` object's vtable slot 4 (`obj, 0, 4, 0, <0|1>`) resolved to a
+concrete EP1 command, plus a verification pass on the bench.
+
+Until then the raw upload is gated behind an environment variable so it cannot
+corrupt a normal capture by accident:
+
+```
+CV710_CVX8897_UNSAFE=1  ./build/src/cli/cv710userspace --convert half
+```
+
+Without the variable, `--convert` prints a clear "disabled" notice and leaves
+the converter native.
+
 ## 6. HDCP status readout (documented, not implemented)
 
 Recorded here for completeness; **the decision is to not implement it** (see
@@ -153,9 +195,11 @@ Deliberately not done.
 
 ## 7. Open questions
 
-* Whether the converter needs a specific `SetMode`/`SetAllOutputMode` ordering
-  around a table upload (the bootstrap's `0x8a`/`0x0d` writes suggest the
-  output-enable bits are part of it).
-* Whether writing a table while the source is locked is stable — bench work.
+* **Resolve `this->0x14`'s vtable slot 4** (`HWReset`/`SetMode` GPIO or expander
+  write, args `obj, 0, 4, 0, <0|1>`) to a concrete EP1 command, so the reset
+  pulse can be replayed before the table upload. This is the blocker for the
+  whole feature (see §5.1).
+* Whether `SetMode` mode `1` vs `2` is chosen by the rate (both call `HWReset`;
+  they differ only in the enable bit and one trailing I2C write).
 * Interaction with the passthrough default: confirming the converter is
   currently in the passthrough image (or is simply transparent) on a cold boot.

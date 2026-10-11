@@ -104,7 +104,11 @@ Two things are worth noting:
 
 ---
 
-## 5. The CVX8897 Frame-Rate Converter (Documented Gap)
+## 5. The CVX8897 Frame-Rate Converter (Tables Now Extracted)
+
+> **Update:** the register tables have since been fully extracted and
+> cross-validated — see `devlog/04-cvx8897-frame-rate-converter.md` and
+> `tools/cvx8897/`. The summary below is kept for provenance.
 
 The CVX8897 is a real video processor, and the vendor driver programs it with
 per-resolution register tables whose symbol names survive in the binary:
@@ -131,13 +135,13 @@ ReadRegister / SetAllOutputMode / SetMode / SetParam`. This is where the
 official app's "Video Input Frame Rate [30p]/[25p]" options come from: it
 halves the frame rate in hardware rather than dropping frames in software.
 
-**Status in this project: not implemented.** We capture at the source's
-native rate and let the host drop/convert. Implementing it would mean
-extracting the actual register byte sequences from `avmu3_x64.sys` (the names
-are RTTI method labels; the tables are data blobs referenced by `SetMode`) —
-a disassembly task with real risk, deferred. The kernel port instead exposes
-60/50/30/25/24/15 in `enum_frameintervals` and reports the *measured* rate
-via `g_parm`, which is honest about what the hardware is actually delivering.
+**Status in this project: tables extracted, runtime switch not yet wired.**
+We capture at the source's native rate and let the host drop/convert. The
+actual register byte sequences were recovered from `libC877Driver.dylib` and
+cross-checked byte-for-byte against `avmu3_x64.sys`; they now live in
+`tools/cvx8897/`. Applying a mode is 251 `sendI2cWrite(0x18, reg, val)` calls
+(see devlog 04). The kernel port still exposes 60/50/30/25/24/15 in
+`enum_frameintervals` and reports the *measured* rate via `g_parm`.
 
 ---
 
@@ -172,6 +176,10 @@ drivers must serialise the command+response pair.
 - `src/liblgx/liblgx-common/src/sdl/SdlVideoOutput.{h,cpp}` — two-slot
   splash loading and state-based selection.
 - `PROTOCOL.md` §7 — the EP1 I2C bridge command format.
+- `tools/cvx8897/` — extracted CVX8897 register tables and generator
+  (`cvx8897_tables.json`, `extract_cvx8897.py`, `xcheck_cvx8897_win.py`,
+  `gen_cvx8897_header.py`).
 
-The CVX8897 converter (§5) and the HDCP/content-protection overlays (§2)
-remain open, and are tracked as such rather than half-implemented.
+The CVX8897 converter tables are extracted (§5, devlog 04) but the runtime
+switch is not yet wired; the HDCP/content-protection overlays (§2) remain open.
+Both are tracked as such rather than half-implemented.

@@ -94,6 +94,7 @@ namespace libusb {
         std::string _cvx8897Request{};
         bool _cvx8897Pending{false};
         bool _cvx8897Applied{false};
+        int _cvx8897NoMatchTries{0};
 
         std::vector<libusb_transfer *> _transfers;
         std::atomic<int> _activeTransfers{0};

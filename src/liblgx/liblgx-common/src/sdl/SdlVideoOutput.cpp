@@ -1389,9 +1389,15 @@ namespace sdl {
         for (size_t i = 0; i < sizeof(kSplashFiles) / sizeof(kSplashFiles[0]); ++i) {
             const std::string file = kSplashFiles[i];
             for (const auto &dir : dirs) {
-                std::string path = dir + file;
-                SDL_Surface *surf = SDL_LoadBMP(path.c_str());
-                if (surf) {
+                // CV-28d: try the bare name first (installed layouts keep the
+                // files directly in share/cv710userspace), then the in-tree
+                // assets/ folder. CV-27's refactor dropped the assets/ prefix,
+                // so a run from the repo root never found the bitmaps and fell
+                // back to the text splash.
+                for (const char *prefix : {"", "assets/"}) {
+                    std::string path = dir + prefix + file;
+                    SDL_Surface *surf = SDL_LoadBMP(path.c_str());
+                    if (!surf) continue;
                     _splashTextures[i] = SDL_CreateTextureFromSurface(_renderer, surf);
                     SDL_DestroySurface(surf);
                     if (_splashTextures[i]) {
@@ -1401,6 +1407,11 @@ namespace sdl {
                         break;
                     }
                 }
+                if (_splashTextures[i]) break;
+            }
+            if (!_splashTextures[i]) {
+                fprintf(stderr, "[Video] Standby splash bitmap not found: %s "
+                                "(searched CWD, executable parents, and assets/)\n", file.c_str());
             }
         }
     }

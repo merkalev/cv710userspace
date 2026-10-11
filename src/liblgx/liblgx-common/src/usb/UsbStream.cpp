@@ -672,9 +672,14 @@ namespace libusb {
             table = cvx8897::selectHalfRate(info.activeWidth, info.activeHeight,
                                             info.measuredFps, rgb, info.interlaced);
             if (table == nullptr) {
-                printf("[CVX8897] No half-rate table for %ux%u@%.2f%s; converter left alone.\n",
+                // The first locked snapshot is often transient (e.g. the ADV7604
+                // briefly reporting 1082 active lines while acquiring), so retry
+                // across a few polls before giving up rather than latching the
+                // first off-by-a-few geometry.
+                if (++_cvx8897NoMatchTries < 25) return;
+                printf("[CVX8897] No half-rate table for %ux%u@%.2f%s after %d tries; converter left alone.\n",
                        info.activeWidth, info.activeHeight, info.measuredFps,
-                       info.interlaced ? "i" : "p");
+                       info.interlaced ? "i" : "p", _cvx8897NoMatchTries);
                 fflush(stdout);
                 _cvx8897Pending = false;
                 return;

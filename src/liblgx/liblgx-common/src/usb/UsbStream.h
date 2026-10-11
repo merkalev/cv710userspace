@@ -41,8 +41,12 @@ namespace libusb {
         void setVideoStandard(uint8_t std) override;
         void setCvx8897Conversion(const std::string &mode) override;
         // CV-28i: read on the main thread during initialise(), before the control
-        // thread exists, so a plain bool is safe here.
-        bool cvx8897ConversionPending() const override { return _cvx8897Pending; }
+        // thread exists, so a plain bool is safe here. True only until the
+        // converter has been programmed once; CV-28j re-programs it later on a
+        // live mode change without re-triggering the startup wait.
+        bool cvx8897ConversionPending() const override {
+            return _cvx8897Pending && !_cvx8897FirstApplyDone;
+        }
         void setFpgaIdle();
         void setFpgaWork();
         bool sendResetStreamDma();
@@ -110,7 +114,10 @@ namespace libusb {
         // locked) or on the first locked snapshot seen by the control thread.
         std::string _cvx8897Request{};
         bool _cvx8897Pending{false};
-        bool _cvx8897Applied{false};
+        bool _cvx8897FirstApplyDone{false};
+        std::string _cvx8897AppliedKey{};    // input mode the converter is programmed for now
+        std::string _cvx8897CandidateKey{};  // debounce for a live mode change (CV-28j)
+        int _cvx8897CandidateCount{0};
         int _cvx8897NoMatchTries{0};
 
         std::vector<libusb_transfer *> _transfers;

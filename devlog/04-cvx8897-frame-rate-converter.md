@@ -248,6 +248,29 @@ does not exist yet during this window, so the loop owns the device. If no
 convertible mode appears in time the converter is left native and normal capture
 proceeds; the bounded wait cannot hang startup on a missing source.
 
+### 5.5 Live mode changes (CV-28j) — re-program per input, not once
+
+The converter latches its mode, and the first cut programmed it **once**, on the
+initial lock. Bench testing with a source cycling 1080p60 → 1080i60 → 576p50 →
+720p60 → 480p60 → … left the converter stuck on the first table
+(`1080p60->30p`) for every later mode, which tears the picture for all of them
+(SD, interlaced and 720p). That is the "unusable in half mode" report.
+
+`maybeApplyCvx8897()` now re-evaluates on every locked snapshot and re-programs
+when the target changes. It derives a key — the selected table name, or
+`native` when there is none — and:
+
+* applies the matching table when one exists;
+* restores **native passthrough** when none does (SD, interlaced, 24p/30p,
+  unusual geometry) instead of leaving the previous mode latched;
+* debounces a *live* change over 3 polls (~300 ms) so a transient acquisition
+  geometry does not fire back-to-back 3 s resets. The initial apply (startup,
+  before streaming, CV-28i) is not debounced.
+
+`selectHalfRate()` also now refuses any rate outside the 60 Hz family
+(55–66 fps) and 50 Hz family (45–55 fps), so a 24p or 30p source is never fed
+the 60→30 table's input timing.
+
 ## 6. HDCP status readout (documented, not implemented)
 
 Recorded here for completeness; **the decision is to not implement it** (see
@@ -280,3 +303,14 @@ Deliberately not done.
 * Whether the `--convert reset` recovery fully restores a wedged converter (it
   never came up in the bench session, since the only wedged state was cleared by
   power-cycling).
+* **Open (SD scan mode):** for 480p and 576p the ADV7604 reports progressive
+  (720x480p / 720x576p) but the FPGA's C0 interlace bit (`b2` bit 7) is *set*
+  and flaps, so the parser alternates between classifying the same signal as
+  `480p`/`576p` and as a woven `720x960` / `720x1152` field pair. Each "field"
+  is a full 480/576 lines (172800 / 207360 words), i.e. **full frame height**,
+  not a half-height interlaced field — so weaving doubles the picture. This is
+  independent of CVX8897 conversion (it reproduces after `--convert reset`) and
+  is believed to be a pre-existing parser/detection issue, not a converter one.
+  A targeted fix would prefer the receiver's progressive classification for SD
+  when the field word count equals the full frame, without re-breaking the
+  1080i field case (518400 words, which must stay interlaced).

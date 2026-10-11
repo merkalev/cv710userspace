@@ -57,6 +57,14 @@ TEST_CASE("cvx8897: unsupported and interlaced inputs are left alone", "[cvx8897
     // Unregistered geometry.
     CHECK(selectHalfRate(1600, 900, 60.0f, false, false) == nullptr);
     CHECK(selectHalfRate(3840, 2160, 60.0f, false, false) == nullptr);
+    // Rates the vendor has no table for must not be mis-programmed with the
+    // 60->30 table (doing so feeds the converter the wrong input timing).
+    CHECK(selectHalfRate(1920, 1080, 24.0f, false, false) == nullptr);
+    CHECK(selectHalfRate(1920, 1080, 23.98f, false, false) == nullptr);
+    CHECK(selectHalfRate(1920, 1080, 30.0f, false, false) == nullptr);
+    // The 60->30 panels have no 50 Hz table either.
+    CHECK(selectHalfRate(800, 600, 50.0f, false, false) == nullptr);
+    CHECK(selectHalfRate(1280, 1024, 50.0f, false, false) == nullptr);
 }
 
 TEST_CASE("cvx8897: findTable resolves exact names and rejects junk", "[cvx8897]") {

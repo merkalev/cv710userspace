@@ -669,7 +669,7 @@ namespace libusb {
     }
 
     void UsbStream::maybeApplyCvx8897(const lgx2::VideoSignalInfo &info) {
-        if (!_cvx8897Pending || _cvx8897Applied || !_dev) return;
+        if (!_cvx8897Pending || !_dev) return;
 
         // CV-28g: recovery mode. "reset" replays the vendor HWReset preamble and
         // restores the native output without uploading a table, so a converter
@@ -678,36 +678,39 @@ namespace libusb {
         // the source to lock (there may be no lock precisely because the
         // converter is stuck).
         if (_cvx8897Request == "reset") {
+            if (_cvx8897FirstApplyDone) return;
             printf("[CVX8897] Restoring converter to native (HWReset preamble)...\n");
             fflush(stdout);
             const bool ok = cvx8897SetModeNative();
-            _cvx8897Pending = false;
-            _cvx8897Applied = true;
+            _cvx8897FirstApplyDone = true;
+            _cvx8897AppliedKey = "reset";
             printf("[CVX8897] Converter reset %s.\n",
                    ok ? "complete; re-run normally" : "FAILED (PCA9539 @0x74 not responding)");
             fflush(stdout);
             return;
         }
 
+        // Need a locked input to choose anything.
+        if (!info.locked) return;
+
+        // Decide what the converter should be programmed for *now*. CV-28j: the
+        // vendor re-runs setupScaler() for every input mode, and the converter
+        // latches its mode across app runs, so we must re-evaluate whenever the
+        // input changes - not just once. "half"/"auto" pick a table from the
+        // detected geometry; anything without a table (SD, interlaced, unusual
+        // rates/geometry) means "native passthrough".
         const cvx8897::Table *table = nullptr;
+        bool native = false;
         if (_cvx8897Request == "half" || _cvx8897Request == "auto") {
-            // Need a locked input to choose the table. Defer until then.
-            if (!info.locked) return;
             const bool rgb = (info.aviColorspace & 0x0F) <= 0x01;  // RGB limited/full
             table = cvx8897::selectHalfRate(info.activeWidth, info.activeHeight,
                                             info.measuredFps, rgb, info.interlaced);
             if (table == nullptr) {
-                // The first locked snapshot is often transient (e.g. the ADV7604
-                // briefly reporting 1082 active lines while acquiring), so retry
-                // across a few polls before giving up rather than latching the
-                // first off-by-a-few geometry.
-                if (++_cvx8897NoMatchTries < 25) return;
-                printf("[CVX8897] No half-rate table for %ux%u@%.2f%s after %d tries; converter left alone.\n",
-                       info.activeWidth, info.activeHeight, info.measuredFps,
-                       info.interlaced ? "i" : "p", _cvx8897NoMatchTries);
-                fflush(stdout);
-                _cvx8897Pending = false;
-                return;
+                // Before the first successful apply the receiver's first locked
+                // snapshot is often transient (e.g. 1920x1074 while acquiring),
+                // so retry across a few polls before concluding "no table".
+                if (!_cvx8897FirstApplyDone && ++_cvx8897NoMatchTries < 25) return;
+                native = true;
             }
         } else {
             table = cvx8897::findTable(_cvx8897Request);
@@ -715,9 +718,45 @@ namespace libusb {
                 printf("[CVX8897] Unknown mode '%s'; converter left alone (see --list-cvx8897).\n",
                        _cvx8897Request.c_str());
                 fflush(stdout);
-                _cvx8897Pending = false;
+                _cvx8897FirstApplyDone = true;
                 return;
             }
+        }
+
+        const std::string key = table ? std::string(table->name) : std::string("native");
+        if (key == _cvx8897AppliedKey) {
+            // Already programmed for this input; nothing to do. (This is the
+            // steady state once the initial apply has completed.)
+            _cvx8897FirstApplyDone = true;
+            return;
+        }
+
+        // Debounce a *live* mode change so a transitional geometry does not
+        // trigger back-to-back 3 s resets. The first apply (startup, before
+        // streaming) is not debounced - initialise() wants it done before frames.
+        if (_cvx8897FirstApplyDone) {
+            if (key != _cvx8897CandidateKey) {
+                _cvx8897CandidateKey = key;
+                _cvx8897CandidateCount = 1;
+                return;
+            }
+            if (++_cvx8897CandidateCount < 3) return;
+        }
+
+        if (native) {
+            printf("[CVX8897] No half-rate table for %ux%u@%.2f%s; restoring native passthrough.\n",
+                   info.activeWidth, info.activeHeight, info.measuredFps,
+                   info.interlaced ? "i" : "p");
+            fflush(stdout);
+            const bool ok = cvx8897SetModeNative();
+            _cvx8897AppliedKey = key;
+            _cvx8897FirstApplyDone = true;
+            _cvx8897CandidateCount = 0;
+            if (!ok) {
+                printf("[CVX8897] Native restore FAILED (PCA9539 @0x74 not responding).\n");
+                fflush(stdout);
+            }
+            return;
         }
 
         // CV-28f: replay the vendor's lower/upload ordering. The frame-rate
@@ -730,18 +769,22 @@ namespace libusb {
             printf("[CVX8897] Converter reset failed (PCA9539 @0x74 not responding); "
                    "leaving the converter native.\n");
             fflush(stdout);
-            _cvx8897Pending = false;
+            // Do not retry this same target every poll, but allow a later mode
+            // change to try again (a one-off expander glitch should not disable
+            // conversion for the rest of the session).
+            _cvx8897AppliedKey = key;
+            _cvx8897FirstApplyDone = true;
             return;
         }
 
         // 251 register writes over the EP1 I2C bridge (see tools/cvx8897/README.md).
-        // This is the only point that programs the converter, and it runs once.
         int failures = cvx8897::apply(*table, [this](uint8_t reg, uint8_t val) {
             return sendI2cWrite(cvx8897::kI2cAddress, reg, val);
         });
 
-        _cvx8897Pending = false;
-        _cvx8897Applied = true;
+        _cvx8897AppliedKey = key;
+        _cvx8897FirstApplyDone = true;
+        _cvx8897CandidateCount = 0;
         if (failures != 0) {
             printf("[CVX8897] Applied '%s' with %d/%zu write failures.\n",
                    table->name, failures, cvx8897::kRegCount);

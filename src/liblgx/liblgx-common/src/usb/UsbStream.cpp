@@ -726,7 +726,11 @@ namespace libusb {
         const std::string key = table ? std::string(table->name) : std::string("native");
         if (key == _cvx8897AppliedKey) {
             // Already programmed for this input; nothing to do. (This is the
-            // steady state once the initial apply has completed.)
+            // steady state once the initial apply has completed.) Forget any
+            // half-built candidate so the debounce only counts *consecutive*
+            // observations of a different mode.
+            _cvx8897CandidateKey.clear();
+            _cvx8897CandidateCount = 0;
             _cvx8897FirstApplyDone = true;
             return;
         }
@@ -1122,17 +1126,24 @@ namespace libusb {
 
     void UsbStream::submitTransfer(libusb_transfer *transfer) {
         if (!isShuttingDown() && _dev != nullptr) {
+            // Count the transfer as active BEFORE submitting: the completion
+            // callback runs on the libusb event thread and may decrement before
+            // this thread would otherwise get to increment (stall-recovery
+            // resubmits come from the main thread), driving the counter negative.
+            _activeTransfers.fetch_add(1, std::memory_order_relaxed);
             int rc = libusb_submit_transfer(transfer);
             if (rc == 0) {
                 _submitFailures.store(0, std::memory_order_relaxed);
-                _activeTransfers.fetch_add(1, std::memory_order_relaxed);
-            } else if (!isShuttingDown()) {
-                int failures = _submitFailures.fetch_add(1, std::memory_order_relaxed) + 1;
-                fprintf(stderr, "[USB] libusb_submit_transfer failed: %d (consecutive: %d)\n", rc, failures);
-                // CV-08: a submission failure that empties the pipeline must be
-                // escalated instead of silently degrading to a dead preview.
-                if (_activeTransfers.load(std::memory_order_relaxed) == 0) {
-                    signalError("USB pipeline stalled: no transfers remain active and resubmission failed");
+            } else {
+                _activeTransfers.fetch_sub(1, std::memory_order_relaxed);
+                if (!isShuttingDown()) {
+                    int failures = _submitFailures.fetch_add(1, std::memory_order_relaxed) + 1;
+                    fprintf(stderr, "[USB] libusb_submit_transfer failed: %d (consecutive: %d)\n", rc, failures);
+                    // CV-08: a submission failure that empties the pipeline must be
+                    // escalated instead of silently degrading to a dead preview.
+                    if (_activeTransfers.load(std::memory_order_relaxed) == 0) {
+                        signalError("USB pipeline stalled: no transfers remain active and resubmission failed");
+                    }
                 }
             }
         }

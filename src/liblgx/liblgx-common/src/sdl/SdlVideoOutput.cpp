@@ -785,14 +785,16 @@ namespace sdl {
         int targetH = static_cast<int>(height);
         int step = 1;
         if (_targetScale == lgx2::VideoScale::Half) {
-            targetW /= 2;
+            targetW = (targetW / 2) & ~1;
             targetH /= 2;
             step = 2;
         } else if (_targetScale == lgx2::VideoScale::Quarter) {
-            targetW /= 4;
+            targetW = (targetW / 4) & ~1;
             targetH /= 4;
             step = 4;
         }
+        if (targetW < 2) targetW = 2;
+        if (targetH < 1) targetH = 1;
 
         if (width != static_cast<uint32_t>(_srcWidth) || height != static_cast<uint32_t>(_srcHeight) ||
             targetW != _texWidth || targetH != _texHeight || !_texture) {

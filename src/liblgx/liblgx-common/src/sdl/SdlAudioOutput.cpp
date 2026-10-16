@@ -54,8 +54,9 @@ namespace sdl {
     void SdlAudioOutput::printAudioDevices() {
         SDL_Init(SDL_INIT_AUDIO);
         DeviceList list;
+        const char *defName = SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
         printf("Audio playback devices:\n");
-        printf("  [default] %s\n", SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK));
+        printf("  [default] %s\n", defName ? defName : "(system default)");
         for (int i = 0; i < list.count; ++i) {
             printf("  [%d] %s%s\n", i, list.name(i),
                    looksLikeLoopback(list.name(i)) ? "  <-- loopback (capturable)" : "");
@@ -112,7 +113,8 @@ namespace sdl {
             fflush(stdout);
         }
 
-        _resolvedName = SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+        const char *defName = SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+        _resolvedName = defName ? defName : "";
         return SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
     }
 

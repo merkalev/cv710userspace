@@ -536,6 +536,8 @@ namespace lgx2 {
                                         // newly captured lines with stale ones.
                                         if (_fieldsWoven == 0x03) {
                                             _fieldsWoven = 0;
+                                            _validFrames++;
+                                            _skewRun = 0;
                                             if (_validFrames <= 5 || (_validFrames % 120) == 0) {
                                                 printf("[Video] Woven interlaced frame: %ux%u b2=0x%02x hwInt=%d parityReliable=%d fieldWords=%u\n",
                                                        _activeWidth, _activeHeight, _currentFieldFlags,
@@ -544,8 +546,6 @@ namespace lgx2 {
                                             }
                                             produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
                                                              reinterpret_cast<uint8_t *>(_interlacedBuffer.data()));
-                                            _validFrames++;
-                                            _skewRun = 0;
                                         }
                                     }
                                 } else {
@@ -561,10 +561,10 @@ namespace lgx2 {
                                     if (frameWords != mode.targetWords) {
                                         noteCorruptFrame(frameWords, mode.name, "locked-mode size mismatch");
                                     } else {
-                                        produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
-                                                         reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
                                         _validFrames++;
                                         _skewRun = 0;
+                                        produceVideoData(mode.targetWords, _activeWidth, _activeHeight,
+                                                         reinterpret_cast<uint8_t *>(_frameBuilder.videoFrameData()));
                                     }
                                 }
                             } else {

@@ -1,12 +1,23 @@
 # cv710userspace
 
-**Before continuing! This project aims to provide userspace capture support for the AVerMedia ExtremeCap U3 (CV710) capture card on Linux. The software is experimental, forked from [ChrisAJS/lgx2userspace](https://github.com/ChrisAJS/lgx2userspace), and provided without warranty.**
+Userspace capture driver for the [AVerMedia ExtremeCap U3 (CV710)](https://www.avermedia.com/) (USB ID `07ca:0710`) on Linux. It can display captured video and audio in a standalone SDL3 window, or forward the captured stream to a virtual V4L2 loopback device for OBS, Discord or a browser.
 
-This project contains a userspace driver for the [AVerMedia ExtremeCap U3 (CV710)](https://www.avermedia.com/) (USB ID `07ca:0710`).
+There is also a Windows build — see [WINDOWS.md](WINDOWS.md).
 
-It can be used to display captured video and audio in a standalone SDL3 window or forward the captured stream to a virtual V4L2 loopback video capture device.
+> **Status: experimental.** Forked from [ChrisAJS/lgx2userspace](https://github.com/ChrisAJS/lgx2userspace) and provided without warranty. It reimplements the official driver's behaviour from observation — no vendor source is used — and it is neither affiliated with nor endorsed by AVerMedia (see [Legal](#legal)).
 
-There is also a Windows build. Instructions on how to use this can be found in [WINDOWS.md](WINDOWS.md).
+**Related project:** the kernel-space sibling is the out-of-tree V4L2 driver [`avmcv710`](../avmcv710), which exposes the same hardware as a standard capture node instead of a userspace app. They are alternatives — you need one or the other, not both; to run them side by side see [Setup](#setup).
+
+## Contents
+
+- [Component Video Input Notice](#component-video-input-notice)
+- [Building](#building)
+- [Setup](#setup)
+- [Running](#running)
+- [Running with V4L2 Output](#running-with-v4l2-output)
+- [Protocol Documentation](#protocol-documentation)
+- [Legal](#legal)
+- [Attributions](#attributions)
 
 ## Component Video Input Notice
 Component (YPbPr) analog video input is currently not supported. Capture on the ExtremeCap U3 is HDMI only. The component input requires a proprietary multi-pin analog breakout cable, ADV7604 analog front-end ADC calibration, sync slicer clock locking, and analog audio routing through the onboard TLV320AIC3101 codec. Attempting to switch inputs in software without these routines will only corrupt HDMI contrast/brightness levels.
@@ -192,6 +203,17 @@ Video and audio then arrive as two independent sources — video from
 ## Protocol Documentation
 Technical details on the USB bulk streaming protocol, packet framing markers, FPGA checksum validation, and audio format are documented in [PROTOCOL.md](PROTOCOL.md). Known hardware limitations are tracked in [ISSUES.md](ISSUES.md).
 
+## Legal
+
+*Not legal advice. If any of this matters to you, talk to a lawyer.*
+
+- **No affiliation.** This is an independent interoperability project. It is not affiliated with, authorised by or endorsed by AVerMedia. "AVerMedia", "ExtremeCap U3" and "CV710" are trademarks of their respective owners, used here only to identify the hardware this project targets.
+- **Reverse-engineered for interoperability.** The driver was written by observing the device's own USB traffic and the vendor's shipped binaries; it contains no vendor source code.
+- **No HDCP, no circumvention.** The project implements no HDCP: no authentication, no key material, no cipher, and no key derivation; the bootstrap sequence initialises the receiver for raw digitisation only. Whatever a protected source does here, it does because of the hardware, not because of this code — see [ISSUES.md](ISSUES.md) §6.
+- **Your responsibility.** Whether you may capture, record or redistribute any particular signal is governed by laws such as the DMCA (17 U.S.C. §1201) and the EU Information Society Directive (Art. 6), and by the terms of the content's licence. That is between you and the rights holders.
+- **Vendor assets.** The standby overlay bitmaps in `assets/` are AVerMedia's artwork, reproduced so the presentation matches the official driver; copyright remains with AVerMedia. Remove them if that is a problem for your distribution.
+- **No warranty.** Provided "as is", without warranty of any kind — see [LICENSE.md](LICENSE.md).
+
 ## Attributions
 This project is forked from [lgx2userspace](https://github.com/ChrisAJS/lgx2userspace) by Chris Sawczuk (ChrisAJS) and uses the hard work of:
 
@@ -199,3 +221,4 @@ This project is forked from [lgx2userspace](https://github.com/ChrisAJS/lgx2user
 * [SDL3](https://www.libsdl.org/)
 * [V4L2Loopback](https://github.com/umlaeute/v4l2loopback)
 * [Catch2](https://github.com/catchorg/Catch2)
+* [AVerMedia](https://www.avermedia.com/) — the ExtremeCap U3 hardware, and the standby overlay artwork in `assets/` (see [Legal](#legal))

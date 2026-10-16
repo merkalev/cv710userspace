@@ -27,6 +27,8 @@ core*
 # Scratch directory
 scratch/
 
-# Generated headers
+# Generated headers & Python cache
 src/version.h
 src/liblgx/src/config.h
+__pycache__/
+*.pyc

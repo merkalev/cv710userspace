@@ -753,3 +753,34 @@ Credit: This work builds upon the pioneering research and userspace driver found
   declares YCbCr and confirm the status line reports `Colorspace: YCbCr 709
   limited` and the OSD/HUD toggles to `BT.709 Limited` (not Full). `C` still
   overrides manually if desired.
+
+
+---
+
+## 25. Deep Bug Scan, 2026-10-16 (4 passes)
+
+Fixed (all covered by the build + `framebuilder_test`, `device_parser_test`, `cvx8897_test`):
+
+- **Audio:** `SdlAudioOutput` no longer calls `SDL_ClearAudioStream()` when
+  >12 KB is queued (that wiped the buffer and clicked); it drops only the
+  incoming packet once queued data exceeds ~250 ms, scaled by the current
+  sample rate. A null default-device name no longer crashes SDL3 init.
+- **Geometry:** active width must be even (YUY2 macropixel) and audio payloads
+  4-byte aligned; scaled texture width (`-S 2` / `-S 4`) is macropixel-aligned;
+  adaptive interlaced detection requires an exact line-stride division and an
+  unmatched frame size counts as corrupt and clears `_fieldsWoven`.
+- **Out-of-range gate:** `queryVideoSignalStatus()` now checks the *woven*
+  frame height (`2x` for interlaced `h <= 700`) against the 1,152,000-word
+  budget, using 64-bit math; interlaced sources were previously never gated.
+  Mirrors `avm_signal_ok()` in the kernel driver.
+- **V4L2 loopback:** frame buffer sized for 1920x1200 (WUXGA) and freed in the
+  destructor.
+- **USB / I2C:** fewer unlocked I2C polls (core read short-circuits, one
+  duplicate removed), CVX8897 reset sleeps and the 251-register upload abort
+  on shutdown.
+- **CLI:** repeated flags (`-v -V`, `-d ... -s`) no longer leak the earlier
+  object, and `-h` / `--list-*` free anything already allocated before
+  returning. `-s` clears the V4L2-output flag.
+- **Misc:** `ChronoLogger` divide-by-zero / wrong 10-sample divisor,
+  `FakeUsbStream` null `FILE*`, `_validFrames` counted before
+  `produceVideoData()`.

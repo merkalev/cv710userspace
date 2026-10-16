@@ -455,9 +455,12 @@ namespace libusb {
         // 3840x1200 (2.30M px > 2.304M budget) must show "out of range". The
         // kernel port mirrors this gate in avm_signal_ok().
         bool outOfRange = tmdsLocked && !geometryValid;
-        if (tmdsLocked && geometryValid && !interlaced) {
-            uint32_t vPixels = static_cast<uint32_t>(activeWidth) * activeHeight;
-            outOfRange = vPixels > 2U * 1152000U;
+        if (tmdsLocked && geometryValid) {
+            uint32_t frameH = (interlaced && activeHeight <= 700)
+                                  ? static_cast<uint32_t>(activeHeight) * 2U
+                                  : static_cast<uint32_t>(activeHeight);
+            uint64_t vPixels = static_cast<uint64_t>(activeWidth) * frameH;
+            outOfRange = vPixels > 2ULL * 1152000ULL;
         }
 
         // Audio: PLL lock is HDMI 0x04 bit 0; HDMI 0x18 bit 0 is the "audio

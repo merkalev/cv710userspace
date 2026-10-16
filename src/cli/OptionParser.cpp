@@ -49,6 +49,7 @@ bool app::OptionParser::process(int argc, char **argv) {
 #ifndef __APPLE__
             case 'd':
                 std::cout << "Attempting to output to V4L2Loopback device: " << optarg << std::endl;
+                delete _videoOutput;
                 _videoOutput = new v4l::V4LFrameOutput(optarg);
                 _v4l2Output = true;
                 continue;
@@ -56,18 +57,23 @@ bool app::OptionParser::process(int argc, char **argv) {
 #endif
             case 'f':
                 std::cout << "Using fake USB stream - reading data from 'dump.bin'" << std::endl;
+                delete _stream;
                 _stream = new FakeUsbStream();
                 continue;
             case 'v':
                 std::cout <<"Logging diagnostics information at end of execution" << std::endl;
+                delete _logger;
                 _logger = new ChronoLogger(true);
                 continue;
             case 'V':
                 std::cout <<"Logging diagnostics information - with output during execution " << std::endl;
+                delete _logger;
                 _logger = new ChronoLogger(false);
                 continue;
             case 's':
+                delete _videoOutput;
                 _videoOutput = new NullVideoOutput();
+                _v4l2Output = false;
                 continue;
             case 'b':
                 _fastBootstrap = true;
@@ -79,6 +85,7 @@ bool app::OptionParser::process(int argc, char **argv) {
                 std::cout << "Using full bootstrap (complete capture replay)" << std::endl;
                 continue;
             case 'g':
+                delete _audioOutput;
                 _audioOutput = new NullAudioOutput();
                 continue;
             case 'c':
@@ -113,6 +120,7 @@ bool app::OptionParser::process(int argc, char **argv) {
                 continue;
             case 1002:
                 sdl::SdlAudioOutput::printAudioDevices();
+                cleanup();
                 return false;
             case 1003:
                 _aspect = optarg;
@@ -130,6 +138,7 @@ bool app::OptionParser::process(int argc, char **argv) {
                 for (std::size_t i = 0; i < cvx8897::kTableCount; ++i) {
                     std::cout << "  " << cvx8897::kTables[i].name << "\n";
                 }
+                cleanup();
                 return false;
             case 'h':
             default :
@@ -157,6 +166,7 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t--aspect MODE\tAspect-ratio handling: stretch (default), auto, 4:3, 16:9\n"
                     "\t--convert MODE\tCVX8897 hardware frame-rate conversion: native (default), half/auto, reset, or a mode name\n"
                     "\t--list-cvx8897\tList the CVX8897 conversion mode names and exit\n";
+                cleanup();
                 return false;
             case -1:
                 break;
@@ -166,4 +176,15 @@ bool app::OptionParser::process(int argc, char **argv) {
     }
 
     return true;
+}
+
+void app::OptionParser::cleanup() {
+    delete _videoOutput;
+    _videoOutput = nullptr;
+    delete _audioOutput;
+    _audioOutput = nullptr;
+    delete _logger;
+    _logger = nullptr;
+    delete _stream;
+    _stream = nullptr;
 }

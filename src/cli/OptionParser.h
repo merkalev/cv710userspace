@@ -46,6 +46,8 @@ namespace app {
         bool _audioLoopback{false};
         bool _v4l2Output{false};
         std::string _cvx8897Conversion{""};
+
+        void cleanup();
     };
 }
 

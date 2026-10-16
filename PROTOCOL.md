@@ -1,5 +1,7 @@
 # USB Data Protocol: AVerMedia ExtremeCap U3 (CV710)
 
+> Not affiliated with or endorsed by AVerMedia; see [README Legal](README.md#legal).
+
 ## Credits
 Based on protocol research by ChrisAJS (https://github.com/ChrisAJS/lgx2userspace). This document details the USB bulk streaming protocol, packet framing, and checksum verification for the AVerMedia ExtremeCap U3 (CV710).
 

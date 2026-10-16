@@ -1,5 +1,7 @@
 # Project Roadmap and TODO List
 
+> Not affiliated with or endorsed by AVerMedia; see [README Legal](README.md#legal).
+
 ## Priority: Sub-1080p Resolution Support (Immediate Focus)
 - [x] **Mode detection below 1080p without STDI polling**: The parser derives the
   incoming geometry from the measured frame word count (720p ~460,800 / 1080i

@@ -1,5 +1,7 @@
 # Known Issues and Protocol Roadmap: AVerMedia ExtremeCap U3 (CV710)
 
+> Not affiliated with or endorsed by AVerMedia; see [README Legal](README.md#legal).
+
 This document tracks known limitations, hardware quirks, and reverse-engineering findings for the AVerMedia ExtremeCap U3 (CV710 / C877, USB ID 07ca:0710) userspace capture tool.
 
 Credit: This work builds upon the pioneering research and userspace driver foundation created by ChrisAJS (https://github.com/ChrisAJS/lgx2userspace).

@@ -1,4 +1,7 @@
 # cv710userspace on Windows
+
+> Not affiliated with or endorsed by AVerMedia; see [README Legal](README.md#legal).
+
 How did we end up here?
 
 If you're here because you can't get the official driver working on Windows 11, [there are steps here explaining how you can get the driver to work](https://youtu.be/pi68dlDiizQ). Shout out to [Mistatcx and their Reddit post](https://www.reddit.com/r/AverMedia/comments/15w84ot/comment/jx1h70s/?context=3).

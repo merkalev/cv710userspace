@@ -8,52 +8,67 @@ Credit: This work builds upon the pioneering research and userspace driver found
 
 ---
 
-## 1. Resolution and Refresh Rate Limitations (< 1080p)
+## 1. Resolution and Refresh Rate Limitations (< 1080p) (RESOLVED)
 
-### Symptoms
-- Feeds from consoles or PCs set to 720p, 576p, or 480p produce a black screen, garbled lines, or frame drops.
-- Changing resolution on the fly does not automatically adapt the output window.
+### Symptoms Previously Observed
+- Feeds from consoles or PCs set to 720p, 576p, or 480p produced a black screen, garbled lines, or frame drops.
+- Changing resolution on the fly did not adapt the output window.
 
 ### Root Cause
-1. Hardcoded ADV7604 and FPGA Bootstrap:
-   - The startup command sequence in `commanddata_cv710.cpp` sends hardcoded register writes (via USB EP 0x01 vendor control commands) captured from a 1080p60 HDMI initialization.
-   - The Analog Devices ADV7604 HDMI receiver and Cypress FX3 / Lattice ECP3 FPGA are statically configured for 1080p60 pixel clock, EDID timing, and PLL multipliers.
-2. Fixed Frame Sizing:
-   - Active video accumulation currently expects 1080p active frame size: 1,036,800 uint32 words (1920 x 1080 / 2).
-   - Standard word counts for other modes:
-     - 720p60: 1280 x 720 / 2 = 460,800 uint32 words.
-     - 480p60: 720 x 480 / 2 = 172,800 uint32 words.
-     - 576p50: 720 x 576 / 2 = 207,360 uint32 words.
+- The parser accumulated active video as if the source were always 1080p
+  (1,036,800 uint32 words) instead of deriving the geometry from the received
+  frame. The bootstrap itself is *not* the limit: it runs in HDMI
+  auto-detect and the FPGA passes the raster through unscaled.
 
-### Solution and Next Steps
-- Implement dynamic mode detection via ADV7604 register query (`CRXADV7604::ADIAPI_MwRxGetVideoFormat`).
-- Extract or dump per-mode initialization tables (`commanddata_cv710_720p60.cpp`, `commanddata_cv710_480p60.cpp`) from driver USB traces.
-- Update frame size validation to dynamically follow the detected mode.
-- Note: Mode guard is explicitly disabled per design requirements.
+### Resolution
+- `Device::detectVideoMode()` derives the geometry from the **measured active
+  word count** (1080p 1,036,800 / 1080i 518,400 / 720p 460,800 / 576p
+  207,360 / 480p 172,800 / 576i 103,680 / 480i 86,400 words) and holds it
+  with a 4-frame stability hysteresis (`_pendingCount`).
+- While the receiver is locked, the ADV7604's **own measured geometry** is
+  preferred, so any raster is accepted within a ~2 % (2,000-word) tolerance
+  with no per-mode table entry (1600x900, 1366x768, 1280x1024, ...). The
+  word-count table is only the fallback for the window before the first
+  status read, or when the measurement disagrees with what the FPGA sends.
+- A live mode change re-negotiates the output: `V4L2_EVENT_SOURCE_CHANGE` plus
+  `S_FMT` for the loopback sink, texture and DAR refresh for the SDL window.
+- Open (bench only): exact word counts for 720p / 576p / 480p under locked
+  STDI timing (`TODO.md`, "Frame Size Calibration for Sub-1080p").
 
 ---
 
-## 2. Interlaced Video (1080i, 576i, 480i)
+## 2. Interlaced Video (1080i, 576i, 480i) (FIXED — bench check pending)
 
-### Symptoms
-- 1080i or 480i input renders as half-height scrambled frames, combed edges, or fails to lock.
+### Symptoms Previously Observed
+- 1080i, 576i or 480i input rendered as half-height scrambled frames, combed
+  edges, or failed to lock.
 
 ### Root Cause
-- The ADV7604 sends interlaced video in alternating half-height fields (Top Field and Bottom Field).
+- The ADV7604 sends interlaced video in alternating half-height fields (Top
+  Field and Bottom Field).
 - In the 0xC0FFFF00 metadata word (`b0, b1, b2, b3`), byte `b2` indicates field structure:
   - `b2 & 0x80`: Dual field / Interlaced indicator.
   - `b2 & 0x01`: Field index (Field 0 vs Field 1).
-- In `libC877Driver.dylib`, interlaced frames are handled by `VideoParseBuffer::copyDualFieldData`:
-  ```cpp
-  // Dual-field copy weaves top and bottom fields into alternating scanlines
-  dest[y * 2 * stride + x]     = field0[y * stride + x];
-  dest[(y * 2 + 1) * stride + x] = field1[y * stride + x];
-  ```
-- The current userspace parser assumes progressive video and appends all incoming chunks linearly.
+- The parser used to assume progressive video and append every chunk linearly,
+  and it decided the scan mode from the receiver's STDI bit alone.
 
-### Solution and Next Steps
-- Inspect `b2` in C0 metadata for the interlace flag.
-- Route dual-field video through a field-weaving buffer (`copyDualFieldData`) or expose a Bob/Weave deinterlace filter before SDL/V4L2 presentation.
+### Resolution
+- Scan mode is the FPGA's own `C0` field flag (`b2 & 0x80`) **OR** the
+  receiver's STDI interlace bit (IO `0x12` bit 4), with the per-field word
+  counts (1080i ~518,400 / 576i ~103,680 / 480i ~86,400) as a tie-breaker
+  when both flags are clear, since those ranges are disjoint from every
+  progressive mode (F-09).
+- Dual-field frames are woven into full-height output: each field is copied
+  to alternating scanlines (`_interlacedBuffer`, the `copyDualFieldData`
+  equivalent) and the pair is presented as one frame. The vendor's own
+  `libC877Driver.dylib::VideoParseBuffer::copyDualFieldData` uses the same
+  layout (field 0 to even, field 1 to odd scanlines).
+- Field placement uses the device field index (`b2 & 0x01`) once it has been
+  observed to alternate twice (`_deviceParityReliable`); some firmware holds
+  it constant, so a local toggle is the fallback (F-01 / CV-04).
+- A spurious `C0` interlace bit on progressive 480p / 576p is overridden when
+  a locked receiver measures a matching progressive frame, so SD is not woven
+  into double-height (CV-28k).
 
 ---
 

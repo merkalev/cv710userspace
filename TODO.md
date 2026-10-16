@@ -5,7 +5,7 @@
 ## Priority: Sub-1080p Resolution Support (Immediate Focus)
 - [x] **Mode detection below 1080p without STDI polling**: The parser derives the
   incoming geometry from the measured frame word count (720p ~460,800 / 1080i
-  ~518,400 / 576p ~207,360 / 480p ~172,800 / 576i / 480i), with 5-frame
+  ~518,400 / 576p ~207,360 / 480p ~172,800 / 576i / 480i), with 4-frame
   hysteresis, so sub-1080p display works without touching the receiver.
 - [~] **ADV7604 STDI (Standard Identification) Telemetry** — **read-only, needs bench verification**:
   - The status query now reads the ADV7604 **CP map** STDI registers

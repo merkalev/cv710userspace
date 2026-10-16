@@ -9,12 +9,16 @@
 #include <linux/videodev2.h>
 
 namespace {
-    // Largest frame the CV710 can deliver: 1080p60 YUY2 = 1920 * 1080 * 2 bytes.
-    constexpr size_t MAX_FRAME_BYTES = 1920u * 1080u * 2u;
+    // Largest frame the CV710 can deliver: 1920x1200 (WUXGA) YUY2 = 1920 * 1200 * 2 bytes.
+    constexpr size_t MAX_FRAME_BYTES = 1920u * 1200u * 2u;
 }
 
 v4l::V4LFrameOutput::V4LFrameOutput(const std::string &deviceName) {
     _v4l2fd = open(deviceName.c_str(), O_RDWR);
+}
+
+v4l::V4LFrameOutput::~V4LFrameOutput() {
+    shutdownVideo();
 }
 
 void v4l::V4LFrameOutput::initialiseVideo(lgx2::VideoScale) {
@@ -54,6 +58,9 @@ bool v4l::V4LFrameOutput::negotiateFormat(uint32_t width, uint32_t height) {
     _width = v.fmt.pix.width;
     _height = v.fmt.pix.height;
     _frameBytes = static_cast<size_t>(_width) * _height * 2;
+    if (_frameBytes > _bufferCapacity) {
+        _frameBytes = _bufferCapacity;
+    }
     printf("[V4L] Output format set to %ux%u YUYV (%zu bytes/frame)\n",
            _width, _height, _frameBytes);
     fflush(stdout);

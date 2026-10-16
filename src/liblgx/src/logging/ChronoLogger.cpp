@@ -36,9 +36,9 @@ void ChronoLogger::logTimeEnd(const std::string &name, const std::string &messag
     if (_counts[name] == 10) {
         _counts[name] = 0;
         if (!_summaryOnly) {
-            _logfile << message << " - avg. ns.: " << _times[name] / 50 << std::endl;
+            _logfile << message << " - avg. ns.: " << _times[name] / 10 << std::endl;
         }
-        _summaries[name].push_back(_times[name] / 50);
+        _summaries[name].push_back(_times[name] / 10);
         _times[name] = 0;
     }
 }
@@ -53,6 +53,9 @@ void ChronoLogger::summarise() {
     _logfile << "Total run time: " << durationNanos << "ns (" << durationSeconds << "s)" << std::endl;
 
     for (auto key = _summaries.begin(); key != _summaries.end(); key++) {
+        if ((*key).second.empty()) {
+            continue;
+        }
         uint64_t total = 0;
         for (uint64_t value: (*key).second) {
             total += value;

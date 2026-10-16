@@ -359,10 +359,11 @@ namespace libusb {
         // Core reads: without geometry and lock the snapshot is meaningless, so
         // keep the last known good values instead of publishing garbage (CV-13).
         int coreFailures = 0;
-        coreFailures += rd(0x20, 0x6A, &ioLock, 1);   // IO 0x6a: TMDS lock (mask 0xe0)
-        coreFailures += rd(0x20, 0x12, &ioFlags, 1);  // IO 0x12: STDI, interlaced = bit 4
-        coreFailures += rd(0x34, 0x07, widthBytes, 2);
-        coreFailures += rd(0x34, 0x09, heightBytes, 2);
+        if ((coreFailures += rd(0x20, 0x6A, &ioLock, 1)) == 0 &&
+            (coreFailures += rd(0x20, 0x12, &ioFlags, 1)) == 0 &&
+            (coreFailures += rd(0x34, 0x07, widthBytes, 2)) == 0) {
+            coreFailures += rd(0x34, 0x09, heightBytes, 2);
+        }
 
         if (coreFailures > 0) {
             _statusQueryFailures++;
@@ -384,7 +385,9 @@ namespace libusb {
         bool tmdsLocked = ((ioLock & 0xE0) == 0xE0) && ((ioLock & 0x10) != 0);
 
         // Optional reads: a failure degrades a single field rather than
-        // discarding the whole snapshot.
+        // discarding the whole snapshot. When TMDS is unlocked, only poll
+        // cable-detect (0x20/0x6F) and vidStd (0x20/0x01) so an idle/disconnected
+        // input does not flood EP1 with 18 extra I2C transactions every 100 ms.
         uint8_t hdmiMode = 0;
         uint8_t csByte = 0;
         uint8_t audioStatus = 0;
@@ -397,50 +400,50 @@ namespace libusb {
         uint8_t deepColor = 0;
         uint8_t field1Bytes[2] = {0, 0};
         uint8_t porches[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-        bool haveTimings = true;
-        haveTimings &= rd(0x34, 0x20, porches + 0, 2) == 0;
-        haveTimings &= rd(0x34, 0x22, porches + 2, 2) == 0;
-        haveTimings &= rd(0x34, 0x24, porches + 4, 2) == 0;
-        haveTimings &= rd(0x34, 0x2A, porches + 6, 2) == 0;
-        haveTimings &= rd(0x34, 0x2E, porches + 8, 2) == 0;
-        haveTimings &= rd(0x34, 0x32, porches + 10, 2) == 0;
-        (void)rd(0x34, 0x05, &hdmiMode, 1);
-        (void)rd(0x34, 0x06, &pixelClkMhz, 1);
-        (void)rd(0x34, 0x3B, &pixelClkFrac, 1);
-        (void)rd(0x34, 0x0B, &deepColor, 1);
-        (void)rd(0x34, 0x0B, field1Bytes, 2);
-        (void)rd(0x34, 0x53, &csByte, 1);
-        (void)rd(0x34, 0x04, &audioStatus, 1);
-        (void)rd(0x34, 0x18, &audFreqByte, 1);
+        bool haveTimings = false;
+        bool haveStdi = false;
+        uint16_t stdiBl = 0;
+        uint16_t stdiLcf = 0;
+
         (void)rd(0x20, 0x6F, &cableByte, 1);
         (void)rd(0x20, 0x01, &vidStd, 1);
-        (void)rd(0x20, 0x60, &ioPresence, 1); // IO 0x60: infoframe-present flags
 
-        // CV-24: STDI (Standard Identification) telemetry. Per
-        // drivers/media/i2c/adv7604.c the receiver's own measured geometry
-        // lives on the CP map: 0xB1 = blanking length (14-bit), 0xB3 = line
-        // count per frame (lcf, 11-bit on ADV7604). Purely read-only, kept in
-        // the optional-read class so a failure degrades one log field. This is
-        // a cross-check against the parser's word-count mode detection when a
-        // sub-1080p source is attached (the calibration step itself needs a
-        // bench source).
-        uint8_t stdiBlBytes[2] = {0, 0};
-        uint8_t stdiLcfBytes[2] = {0, 0};
-        bool haveStdi = rd(0x22, 0xB1, stdiBlBytes, 2) == 0 &&
-                        rd(0x22, 0xB3, stdiLcfBytes, 2) == 0;
-        uint16_t stdiBl = ((static_cast<uint16_t>(stdiBlBytes[0]) << 8) | stdiBlBytes[1]) & 0x3FFF;
-        uint16_t stdiLcf = ((static_cast<uint16_t>(stdiLcfBytes[0]) << 8) | stdiLcfBytes[1]) & 0x07FF;
-        // Sanity: a locked 480p signal is ~525 total lines; anything under 240
-        // means the STDI block is not measuring real video (Linux rejects
-        // lcf < 239 in read_stdi()).
-        if (!haveStdi || stdiLcf < 239) {
-            stdiBl = 0;
-            stdiLcf = 0;
+        if (tmdsLocked) {
+            haveTimings = true;
+            haveTimings &= rd(0x34, 0x20, porches + 0, 2) == 0;
+            haveTimings &= rd(0x34, 0x22, porches + 2, 2) == 0;
+            haveTimings &= rd(0x34, 0x24, porches + 4, 2) == 0;
+            haveTimings &= rd(0x34, 0x2A, porches + 6, 2) == 0;
+            haveTimings &= rd(0x34, 0x2E, porches + 8, 2) == 0;
+            haveTimings &= rd(0x34, 0x32, porches + 10, 2) == 0;
+            (void)rd(0x34, 0x05, &hdmiMode, 1);
+            (void)rd(0x34, 0x06, &pixelClkMhz, 1);
+            (void)rd(0x34, 0x3B, &pixelClkFrac, 1);
+            if (rd(0x34, 0x0B, field1Bytes, 2) == 0) {
+                deepColor = field1Bytes[0];
+            }
+            (void)rd(0x34, 0x53, &csByte, 1);
+            (void)rd(0x34, 0x04, &audioStatus, 1);
+            (void)rd(0x34, 0x18, &audFreqByte, 1);
+            (void)rd(0x20, 0x60, &ioPresence, 1); // IO 0x60: infoframe-present flags
+
+            // CV-24: STDI (Standard Identification) telemetry.
+            uint8_t stdiBlBytes[2] = {0, 0};
+            uint8_t stdiLcfBytes[2] = {0, 0};
+            haveStdi = rd(0x22, 0xB1, stdiBlBytes, 2) == 0 &&
+                       rd(0x22, 0xB3, stdiLcfBytes, 2) == 0;
+            stdiBl = ((static_cast<uint16_t>(stdiBlBytes[0]) << 8) | stdiBlBytes[1]) & 0x3FFF;
+            stdiLcf = ((static_cast<uint16_t>(stdiLcfBytes[0]) << 8) | stdiLcfBytes[1]) & 0x07FF;
+            if (!haveStdi || stdiLcf < 239) {
+                stdiBl = 0;
+                stdiLcf = 0;
+            }
         }
 
         uint16_t field1Height = ((field1Bytes[0] & 0x0F) << 8) | field1Bytes[1];
         bool cableDetected = (cableByte & 0x01) != 0 || tmdsLocked;
         bool geometryValid = tmdsLocked && activeWidth >= 320 && activeWidth <= 4095 &&
+                             (activeWidth & 1u) == 0u &&
                              activeHeight >= 120 && activeHeight <= 2048;
 
         // CV-27: distinguish a locked-but-uncapturable source from no signal.
@@ -857,12 +860,20 @@ namespace libusb {
                "(reset bit4, enable bit3)\n", outReg, cfgReg);
         fflush(stdout);
 
+        auto sleepInterruptible = [&](int totalMs) -> bool {
+            for (int elapsed = 0; elapsed < totalMs; elapsed += 50) {
+                if (_controlStop.load() || _shuttingDown.load()) return false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            return !_controlStop.load() && !_shuttingDown.load();
+        };
+
         if (!pca9539SetGpio(0, 4, false, true)) return false;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (!sleepInterruptible(1000)) return false;
         if (!pca9539SetGpio(0, 4, false, false)) return false;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (!sleepInterruptible(1000)) return false;
         if (!pca9539SetGpio(0, 4, false, true)) return false;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (!sleepInterruptible(1000)) return false;
 
         cvx8897SetAllOutputModeBits(!converted);
         pca9539SetGpio(0, 3, false, converted);

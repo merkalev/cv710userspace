@@ -9,6 +9,7 @@ namespace v4l {
     class V4LFrameOutput : public lgx2::VideoOutput {
     public:
         explicit V4LFrameOutput(const std::string &deviceName);
+        ~V4LFrameOutput() override;
 
         void initialiseVideo(lgx2::VideoScale scale) override;
 

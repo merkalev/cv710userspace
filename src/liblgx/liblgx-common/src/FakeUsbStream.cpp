@@ -21,13 +21,21 @@ void FakeUsbStream::queueFrameRead(std::function<void(uint8_t *, uint32_t)> *onD
 }
 
 void FakeUsbStream::update() {
-    if (fread(frameData, 1, 0x1FC000, dump) != 0x1FC000) {
-        rewind(dump);
+    if (dump) {
+        if (fread(frameData, 1, 0x1FC000, dump) != 0x1FC000) {
+            rewind(dump);
+        }
     }
-    (*_onFrameDataCallback)(frameData, 0x1FC000);
+    if (_onFrameDataCallback) {
+        (*_onFrameDataCallback)(frameData, 0x1FC000);
+    }
 }
 
 void FakeUsbStream::shutdownStream() {
-    fclose(dump);
+    if (dump) {
+        fclose(dump);
+        dump = nullptr;
+    }
     delete[] frameData;
+    frameData = nullptr;
 }

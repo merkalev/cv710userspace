@@ -150,7 +150,7 @@ namespace lgx2 {
                 interlaced = false;
             }
         }
-        if (sig.locked && sig.activeWidth > 0) {
+        if (sig.locked && sig.activeWidth > 0 && (sig.activeWidth & 1u) == 0u) {
             uint32_t w = sig.activeWidth;
             if (interlaced) {
                 // Derive the field height from the observed word count so we do
@@ -163,6 +163,7 @@ namespace lgx2 {
                 // Otherwise trust the receiver-reported geometry.
                 if (sig.activeHeight > 0) {
                     uint32_t frameH = (sig.activeHeight <= 700) ? sig.activeHeight * 2 : sig.activeHeight;
+                    frameH &= ~1u;
                     uint32_t expected = (w * (frameH / 2)) / 2;
                     uint32_t atol = expected / 50 + 64;
                     if (frameWords + atol >= expected && frameWords <= expected + atol) {
@@ -181,14 +182,20 @@ namespace lgx2 {
 
         // 2. Fallback table (used before the first ADV7604 status read, or if the
         //    measurement disagrees with what the FPGA is actually sending).
-        if (frameWords >= 1000000 && frameWords <= 1050000) return {1920, 1080, 1036800, "1080p", true, false};
-        if (frameWords >= 510000 && frameWords <= 524000)   return {1920, 1080, 1036800, "1080i", true, true};
-        if (frameWords >= 440000 && frameWords <= 480000)   return {1280, 720, 460800, "720p", true, false};
-        if (frameWords >= 526000 && frameWords <= 545000)   return {1280, 720, 460800, "720p", true, false};
-        if (frameWords >= 195000 && frameWords <= 220000)   return {720, 576, 207360, "576p", true, false};
-        if (frameWords >= 98000 && frameWords <= 110000)    return {720, 576, 207360, "576i", true, true};
-        if (frameWords >= 160000 && frameWords <= 185000)   return {720, 480, 172800, "480p", true, false};
-        if (frameWords >= 80000 && frameWords <= 92000)     return {720, 480, 172800, "480i", true, true};
+        //    When the receiver is locked with a valid width, require the fallback
+        //    entry's width to match so a truncated frame cannot misclassify into
+        //    a smaller resolution.
+        auto widthOk = [&](uint32_t modeW) {
+            return !sig.locked || sig.activeWidth < 320 || sig.activeWidth == modeW;
+        };
+        if (frameWords >= 1000000 && frameWords <= 1050000 && widthOk(1920)) return {1920, 1080, 1036800, "1080p", true, false};
+        if (frameWords >= 510000 && frameWords <= 524000 && widthOk(1920))   return {1920, 1080, 1036800, "1080i", true, true};
+        if (frameWords >= 440000 && frameWords <= 480000 && widthOk(1280))   return {1280, 720, 460800, "720p", true, false};
+        if (frameWords >= 526000 && frameWords <= 545000 && widthOk(1280))   return {1280, 720, 460800, "720p", true, false};
+        if (frameWords >= 195000 && frameWords <= 220000 && widthOk(720))    return {720, 576, 207360, "576p", true, false};
+        if (frameWords >= 98000 && frameWords <= 110000 && widthOk(720))     return {720, 576, 207360, "576i", true, true};
+        if (frameWords >= 160000 && frameWords <= 185000 && widthOk(720))    return {720, 480, 172800, "480p", true, false};
+        if (frameWords >= 80000 && frameWords <= 92000 && widthOk(720))      return {720, 480, 172800, "480i", true, true};
         return {0, 0, 0, "unknown", false, false};
     }
 
@@ -626,7 +633,7 @@ namespace lgx2 {
                 if (i + 1 < count) {
                     uint32_t rawLen = d[i + 1];
                     uint32_t audioBytes = (((rawLen >> 16) & 0xFF) << 8) | ((rawLen >> 24) & 0xFF);
-                    if (audioBytes >= 512 && audioBytes <= 8192) {
+                    if (audioBytes >= 512 && audioBytes <= 8192 && (audioBytes & 3u) == 0u) {
                         uint32_t audioWords = audioBytes / 4;
                         i += 2; // skip marker + len word
                         uint32_t avail = count - i;

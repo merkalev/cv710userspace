@@ -151,11 +151,20 @@ namespace sdl {
     void SdlAudioOutput::audioFrameAvailable(uint32_t *audio, uint32_t byteLength) {
         if (byteLength == 0 || audio == nullptr || !_stream) return;
 
-        // Prevent audio latency and desync build-up during lag spikes:
-        // 48 kHz stereo 16-bit = 192 bytes/ms. 60 ms = 11,520 bytes.
+        // Bound maximum playback latency (~250 ms of 16-bit stereo audio at the
+        // current sample rate, e.g. 48 KB at 48 kHz or 192 KB at 192 kHz).
+        // Previously this called SDL_ClearAudioStream() whenever queued > 12000
+        // (~62 ms at 48 kHz, ~15 ms at 192 kHz), wiping the entire buffer to zero
+        // and causing audible clicks whenever 2-3 USB transfers drained in one
+        // tick. Dropping only the incoming packet when latency exceeds 250 ms
+        // bounds drift without starving the playback callback.
+        const uint32_t rate = (_currentSampleRate >= 32000 && _currentSampleRate <= 192000)
+                                  ? _currentSampleRate
+                                  : 48000u;
+        const int maxQueuedBytes = static_cast<int>(rate); // rate * 4 bytes/sec / 4 = 250 ms
         int queued = SDL_GetAudioStreamQueued(_stream);
-        if (queued > 12000) {
-            SDL_ClearAudioStream(_stream);
+        if (queued > maxQueuedBytes) {
+            return;
         }
 
         SDL_PutAudioStreamData(_stream, audio, static_cast<int>(byteLength));

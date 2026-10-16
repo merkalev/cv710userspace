@@ -153,11 +153,13 @@ namespace lgx2 {
         if (sig.locked && sig.activeWidth > 0 && (sig.activeWidth & 1u) == 0u) {
             uint32_t w = sig.activeWidth;
             if (interlaced) {
-                // Derive the field height from the observed word count so we do
-                // not depend on whether the receiver reports the field height
-                // (540) or the full frame height (1080) at HDMI 0x09.
+                // Derive the field height from the observed word count only when
+                // the word count is an exact multiple of the line stride; an
+                // off-by-one corrupt field must fall through to the receiver-reported
+                // geometry so the CV-23 exact-size gate drops it.
                 uint32_t fieldH = (frameWords * 2) / w;
-                if (fieldH >= 100 && fieldH <= 700) {
+                if (fieldH >= 100 && fieldH <= 700 &&
+                    static_cast<uint64_t>(w) * fieldH == static_cast<uint64_t>(frameWords) * 2u) {
                     return {w, fieldH * 2, w * fieldH, "measured-i", true, true};
                 }
                 // Otherwise trust the receiver-reported geometry.
@@ -181,21 +183,17 @@ namespace lgx2 {
         }
 
         // 2. Fallback table (used before the first ADV7604 status read, or if the
-        //    measurement disagrees with what the FPGA is actually sending).
-        //    When the receiver is locked with a valid width, require the fallback
-        //    entry's width to match so a truncated frame cannot misclassify into
-        //    a smaller resolution.
-        auto widthOk = [&](uint32_t modeW) {
-            return !sig.locked || sig.activeWidth < 320 || sig.activeWidth == modeW;
-        };
-        if (frameWords >= 1000000 && frameWords <= 1050000 && widthOk(1920)) return {1920, 1080, 1036800, "1080p", true, false};
-        if (frameWords >= 510000 && frameWords <= 524000 && widthOk(1920))   return {1920, 1080, 1036800, "1080i", true, true};
-        if (frameWords >= 440000 && frameWords <= 480000 && widthOk(1280))   return {1280, 720, 460800, "720p", true, false};
-        if (frameWords >= 526000 && frameWords <= 545000 && widthOk(1280))   return {1280, 720, 460800, "720p", true, false};
-        if (frameWords >= 195000 && frameWords <= 220000 && widthOk(720))    return {720, 576, 207360, "576p", true, false};
-        if (frameWords >= 98000 && frameWords <= 110000 && widthOk(720))     return {720, 576, 207360, "576i", true, true};
-        if (frameWords >= 160000 && frameWords <= 185000 && widthOk(720))    return {720, 480, 172800, "480p", true, false};
-        if (frameWords >= 80000 && frameWords <= 92000 && widthOk(720))      return {720, 480, 172800, "480i", true, true};
+        //    measurement disagrees with what the FPGA is actually sending; width
+        //    contradictions against a locked receiver are caught by the dedicated
+        //    receiverMismatch guard in onFrameData()).
+        if (frameWords >= 1000000 && frameWords <= 1050000) return {1920, 1080, 1036800, "1080p", true, false};
+        if (frameWords >= 510000 && frameWords <= 524000)   return {1920, 1080, 1036800, "1080i", true, true};
+        if (frameWords >= 440000 && frameWords <= 480000)   return {1280, 720, 460800, "720p", true, false};
+        if (frameWords >= 526000 && frameWords <= 545000)   return {1280, 720, 460800, "720p", true, false};
+        if (frameWords >= 195000 && frameWords <= 220000)   return {720, 576, 207360, "576p", true, false};
+        if (frameWords >= 98000 && frameWords <= 110000)    return {720, 576, 207360, "576i", true, true};
+        if (frameWords >= 160000 && frameWords <= 185000)   return {720, 480, 172800, "480p", true, false};
+        if (frameWords >= 80000 && frameWords <= 92000)     return {720, 480, 172800, "480i", true, true};
         return {0, 0, 0, "unknown", false, false};
     }
 
@@ -592,8 +590,8 @@ namespace lgx2 {
                                 fflush(stdout);
                                 _lastLoggedFrameWords = frameWords;
                             }
-                            _droppedFrames++;
-                            _consecutiveValidFrames = 0;
+                            _fieldsWoven = 0;
+                            noteCorruptFrame(frameWords, "unknown", "unmatched frame size");
                         }
                         _frameBuilder.clearVideo();
                         _inVideo = false;

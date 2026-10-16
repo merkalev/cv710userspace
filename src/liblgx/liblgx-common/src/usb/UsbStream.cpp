@@ -786,6 +786,10 @@ namespace libusb {
 
         // 251 register writes over the EP1 I2C bridge (see tools/cvx8897/README.md).
         int failures = cvx8897::apply(*table, [this](uint8_t reg, uint8_t val) {
+            if (_controlStop.load(std::memory_order_acquire) ||
+                _shuttingDown.load(std::memory_order_acquire)) {
+                return false;
+            }
             return sendI2cWrite(cvx8897::kI2cAddress, reg, val);
         });
 
